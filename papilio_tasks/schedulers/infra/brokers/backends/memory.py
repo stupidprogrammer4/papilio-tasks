@@ -1,12 +1,7 @@
-from typing import Any
+"""Compatibility imports for the shared Taskiq infrastructure."""
 
-from taskiq import InMemoryBroker
+from papilio_tasks.infra.taskiq.brokers.backends.memory import (
+    MemoryBroker,
+)
 
-from ..base import Broker
-
-
-class MemoryBroker(Broker):
-    """Taskiq's in-process broker for tests and local development."""
-
-    def __init__(self, **options: Any) -> None:
-        super().__init__(InMemoryBroker(**options))
+__all__ = ["MemoryBroker"]

@@ -1,18 +1,7 @@
-from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+"""Compatibility imports for the shared Taskiq infrastructure."""
 
-from taskiq import AsyncBroker
-from taskiq.decor import AsyncTaskiqDecoratedTask
+from papilio_tasks.infra.taskiq.brokers.contracts.base import (
+    BrokerContract,
+)
 
-
-class BrokerContract(Protocol):
-    @property
-    def native(self) -> AsyncBroker: ...
-
-    def register(
-        self,
-        task: Callable[..., Awaitable[Any]],
-        *,
-        name: str,
-        labels: dict[str, Any] | None = None,
-    ) -> AsyncTaskiqDecoratedTask: ...
+__all__ = ["BrokerContract"]

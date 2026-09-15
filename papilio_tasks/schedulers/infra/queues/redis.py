@@ -1,13 +1,7 @@
-from dataclasses import dataclass
+"""Compatibility imports for the shared Taskiq infrastructure."""
 
+from papilio_tasks.infra.taskiq.queues.redis import (
+    RedisQueue,
+)
 
-@dataclass(frozen=True)
-class RedisQueue:
-    """A stream and read cursor. Group settings belong to the broker."""
-
-    name: str
-    read_id: str | int = ">"
-
-    def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("Queue name cannot be empty")
+__all__ = ["RedisQueue"]
