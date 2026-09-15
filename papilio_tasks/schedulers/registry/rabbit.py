@@ -2,9 +2,10 @@ from typing import Any
 
 from taskiq.decor import AsyncTaskiqDecoratedTask
 
+from papilio_tasks.infra.taskiq.brokers.contracts.rabbit import RabbitContract
+from papilio_tasks.infra.taskiq.queues.rabbit import RabbitQueue
+
 from ..backends.rabbit import RabbitScheduler
-from ..infra.brokers.contracts.rabbit import RabbitContract
-from ..infra.queues.rabbit import RabbitQueue
 from .base import Registrar
 
 

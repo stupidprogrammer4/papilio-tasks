@@ -1,8 +1,9 @@
 from typing import ClassVar
 
+from papilio_tasks.infra.taskiq.brokers.backends.rabbit import RabbitBroker
+from papilio_tasks.infra.taskiq.queues.rabbit import RabbitQueue
+
 from ..base import Scheduler
-from ..infra.brokers.backends.rabbit import RabbitBroker
-from ..infra.queues.rabbit import RabbitQueue
 
 __all__ = ["RabbitBroker", "RabbitQueue", "RabbitScheduler"]
 

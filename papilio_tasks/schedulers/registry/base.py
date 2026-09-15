@@ -5,9 +5,10 @@ from typing import Any, get_type_hints
 
 from taskiq.decor import AsyncTaskiqDecoratedTask
 
+from papilio_tasks.infra.taskiq.brokers.backends.memory import MemoryBroker
+from papilio_tasks.infra.taskiq.brokers.contracts.base import BrokerContract
+
 from ..base import Scheduler
-from ..infra.brokers.backends.memory import MemoryBroker
-from ..infra.brokers.contracts.base import BrokerContract
 
 
 class Registrar[S: Scheduler]:

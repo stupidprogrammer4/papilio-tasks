@@ -2,9 +2,12 @@ from typing import Any
 
 from taskiq.decor import AsyncTaskiqDecoratedTask
 
+from papilio_tasks.infra.taskiq.brokers.contracts.redis import (
+    RedisStreamContract,
+)
+from papilio_tasks.infra.taskiq.queues.redis import RedisQueue
+
 from ..backends.redis import RedisScheduler
-from ..infra.brokers.contracts.redis import RedisStreamContract
-from ..infra.queues.redis import RedisQueue
 from .base import Registrar
 
 

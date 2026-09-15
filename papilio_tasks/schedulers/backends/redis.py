@@ -1,8 +1,9 @@
 from typing import ClassVar
 
+from papilio_tasks.infra.taskiq.brokers.backends.redis import RedisStreamBroker
+from papilio_tasks.infra.taskiq.queues.redis import RedisQueue
+
 from ..base import Scheduler
-from ..infra.brokers.backends.redis import RedisStreamBroker
-from ..infra.queues.redis import RedisQueue
 
 __all__ = [
     "RedisQueue",
