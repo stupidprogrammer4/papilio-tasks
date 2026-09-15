@@ -346,8 +346,27 @@ apply; this adapter does not add a parser or make coercion strict. The convenien
 CLI implementations live together in `papilio_tasks/cli/`: `main.py` routes
 commands and `scheduler.py` delegates worker/beat execution. The shared CLI/core
 do not import application runtimes. Scheduler construction
-lives in `schedulers/application.py`; registry owns class inclusion/injection;
-infra owns callable registration, queue operations and source capabilities.
+lives in `schedulers/application.py`; registry owns class inclusion/injection.
+Shared Taskiq transport code lives in `papilio_tasks/infra/taskiq/`: `brokers/`
+owns callable registration and backend operations, and `queues/` owns queue
+specifications and declaration helpers. These modules do not depend on scheduler
+classes, projection classes or Dishka. Schedule sources remain in
+`schedulers/infra/sources/`.
+
+Use the shared paths when working directly with transport infrastructure:
+
+```python
+from papilio_tasks.infra.taskiq.brokers.backends.memory import MemoryBroker
+from papilio_tasks.infra.taskiq.brokers.backends.rabbit import RabbitBroker
+from papilio_tasks.infra.taskiq.brokers.backends.redis import RedisStreamBroker
+from papilio_tasks.infra.taskiq.queues.rabbit import RabbitQueue
+from papilio_tasks.infra.taskiq.queues.redis import RedisQueue
+```
+
+Import only the backend you installed. The existing
+`schedulers.infra.brokers.*` and `schedulers.infra.queues.*` paths remain
+compatibility re-exports of the same classes and helpers. Scheduler convenience
+imports from `schedulers.backends.rabbit` and `.redis` also remain available.
 Events/projections remain unimplemented and expose no runnable placeholder command.
 
 ## Migration and development
