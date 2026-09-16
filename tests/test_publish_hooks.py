@@ -97,12 +97,12 @@ async def test_providers_scope_order_payload_and_cleanup(monkeypatch):
         assert isinstance(first, AsyncTaskiqTask)
         assert len(opened) == 2 and opened == closed
         assert [dep for dep, _ in calls] == [opened[0]] * 2 + [opened[1]] * 2
-        assert [event.task_id for _, event in calls] == [first.task_id] * 2 + [
-            second.task_id
-        ] * 2
+        assert [event.result.task_id for _, event in calls] == [
+            first.task_id
+        ] * 2 + [second.task_id] * 2
         event = calls[0][1]
-        assert event.call.task_name == "product"
-        assert event.call.projection.endswith(".Job")
+        assert event.call.meta["task_name"] == "product"
+        assert event.call.sender.endswith(".Job")
         assert event.call.args == () and event.call.kwargs == {"id": 42}
         with pytest.raises(TypeError):
             event.call.kwargs["id"] = 0
@@ -155,11 +155,11 @@ async def test_hook_order_failure_policy_and_primary_error(
         elif policy == "raise":
             with pytest.raises(PublishError) as caught:
                 await app.job.enqueue(42)
-            assert caught.value.task_id == calls[0][1].task_id
+            assert caught.value.result.task_id == calls[0][1].result.task_id
             assert caught.value.__cause__ is hook_error
         else:
             result = await app.job.enqueue(42)
-            assert result.task_id == calls[0][1].task_id
+            assert result.task_id == calls[0][1].result.task_id
         assert [name for name, _ in calls] == (
             ["shared"]
             if policy == "raise"
@@ -215,7 +215,7 @@ async def test_cleanup_failure_preserves_outcome(monkeypatch, failure):
         else:
             with pytest.raises(PublishError) as caught:
                 await app.job.enqueue(42)
-            assert caught.value.task_id == events[0].task_id
+            assert caught.value.result.task_id == events[0].result.task_id
             if failure == "after_send":
                 assert caught.value.__cause__ is primary
             else:

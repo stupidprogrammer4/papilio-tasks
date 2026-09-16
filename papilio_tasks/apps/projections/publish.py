@@ -6,13 +6,10 @@ from typing import Any
 from dishka import AsyncContainer
 from taskiq import AsyncTaskiqTask
 
-from papilio_tasks.tools.hooks import emit
 from papilio_tasks.tools.hooks.publish import (
     PublishCall,
-    Published,
-    PublishError,
-    PublishFailed,
     PublishHooks,
+    publish,
 )
 
 from .contracts import ProjectionContract
@@ -44,47 +41,28 @@ async def enqueue[T, D, R](
     container: AsyncContainer = state.papilio_container
     call = PublishCall(
         f"{cls.__module__}.{cls.__qualname__}",
-        task.task_name,
         args,
         MappingProxyType(kwargs.copy()),
+        MappingProxyType({"task_name": task.task_name}),
     )
-    result: AsyncTaskiqTask[R] | None = None
-    primary: BaseException | None = None
-    try:
-        async with container() as scope:
-            try:
-                shared = (
-                    await scope.get(shared_type)
-                    if shared_type is not None
-                    else PublishHooks()
-                )
-                local = (
-                    await scope.get(local_type)
-                    if local_type is not None
-                    else PublishHooks()
-                )
-                try:
-                    result = await task.kiq(*args, **kwargs)
-                except Exception as error:
-                    failure = PublishFailed(call, error)
-                    try:
-                        await emit(shared.on_error, failure)
-                        await emit(local.on_error, failure)
-                    except Exception as hook_error:
-                        raise error from hook_error
-                    raise
-                published = Published(call, result.task_id)
-                await emit(shared.after_send, published)
-                await emit(local.after_send, published)
-            except BaseException as error:
-                # Keep send/setup errors and cancellation if scope exit fails.
-                primary = error
-                raise
-    except Exception as error:
-        failure = primary if primary is not None else error
-        if result is not None and isinstance(failure, Exception):
-            raise PublishError(result.task_id) from failure
-        if failure is not error:
-            raise failure from error
-        raise
-    return result
+
+    async def resolve(scope: AsyncContainer) -> PublishHooks:
+        shared = (
+            await scope.get(shared_type)
+            if shared_type is not None
+            else PublishHooks()
+        )
+        local = (
+            await scope.get(local_type)
+            if local_type is not None
+            else PublishHooks()
+        )
+        return PublishHooks(
+            after_send=shared.after_send + local.after_send,
+            on_error=shared.on_error + local.on_error,
+        )
+
+    async def send() -> AsyncTaskiqTask[R]:
+        return await task.kiq(*args, **kwargs)
+
+    return await publish(call, send, container(), resolve)

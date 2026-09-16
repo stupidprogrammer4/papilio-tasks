@@ -7,6 +7,7 @@ from .publish import (
     PublishHooks,
 )
 from .runner import Handler, emit
+from .subscribe import SubscribeCall, SubscribeFailed, SubscribeHooks
 
 __all__ = [
     "Handler",
@@ -16,5 +17,8 @@ __all__ = [
     "PublishError",
     "PublishFailed",
     "PublishHooks",
+    "SubscribeCall",
+    "SubscribeFailed",
+    "SubscribeHooks",
     "emit",
 ]

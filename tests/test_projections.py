@@ -379,7 +379,7 @@ def test_projection_type_contracts(tmp_path):
         if "# error" in line
     }
     diagnostics = report["generalDiagnostics"]
-    assert report["summary"]["filesAnalyzed"] == 9, report
+    assert report["summary"]["filesAnalyzed"] == 10, report
     assert report["summary"]["errorCount"] == len(expected), report
     assert report["summary"]["warningCount"] == 0, report
     assert all(Path(d["file"]) == fixture for d in diagnostics), report

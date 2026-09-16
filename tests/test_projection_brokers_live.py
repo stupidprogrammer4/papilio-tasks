@@ -266,7 +266,7 @@ async def test_projection_live_transport_hooks_results_and_ack(
             await batch.enqueue([5, 6]),
             await single.enqueue(Payload(value=13), factor=3),
         ]
-        assert [event.task_id for event in published] == [
+        assert [event.result.task_id for event in published] == [
             handle.task_id for handle in handles
         ]
         assert publish_closed == [True] * 3

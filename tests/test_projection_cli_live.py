@@ -53,7 +53,7 @@ def test_projection_processes(tmp_path, kind, retry):
         class RecordSend(Hook[Published]):
             def __init__(self, audit: Audit): self.audit = audit
             async def run(self, event: Published) -> None:
-                record('published', task_id=event.task_id)
+                record('published', task_id=event.result.task_id)
 
         class ProducerHooks(PublishHooks):
             def __init__(self, hook: RecordSend):
