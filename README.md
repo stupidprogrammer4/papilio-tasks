@@ -31,6 +31,7 @@ pip install 'papilio-tasks[projection-rabbit]' # RabbitMQ
 pip install 'papilio-tasks[projection-redis]'  # Redis Streams / retry source
 pip install 'papilio-tasks[events-rabbit]'     # FastStream RabbitMQ events
 pip install 'papilio-tasks[events-kafka]'      # FastStream Kafka events
+pip install 'papilio-tasks[events-redis]'      # FastStream Redis Streams / PubSub / List events
 ```
 
 A bare `papilio-tasks` installation provides the lightweight CLI and discovery
@@ -184,6 +185,30 @@ Live tests use `TEST_KAFKA_URL=localhost:9092` against an isolated Kafka service
 they create and delete uniquely named topics. They cover single/batch messages,
 metadata, keys/headers/partitions, two consumers sharing a group, and a separate
 batch consumer group. They are not a throughput or failure-recovery benchmark.
+
+### Redis infrastructure
+
+`events-redis` installs FastStream's native Redis integration. Import
+`RedisBroker` from `papilio_tasks.infra.faststream.brokers.backends.redis` and
+construct it with your configured `faststream.redis.RedisBroker`. This adapter
+is separate from the Taskiq Redis backend. See [Redis Streams Events](#redis-streams-events),
+[Redis Pub/Sub Events](#redis-pubsub-events) and [Redis List Events](#redis-list-events)
+for app-level setup.
+
+`RedisContract` exposes the shared `connect/start/stop/native` lifecycle plus
+native `subscriber`, `publisher`, `publish` and `publish_batch`. Channel routes
+accept `str` or `PubSub`; use `list=ListSub(...)` or `stream=StreamSub(...)` for
+other subscription modes. Publisher/subscriber factories return native objects.
+Construction and registration perform no network I/O. `connect()` returns the
+native Redis client and repeated calls reuse it; the native broker owns its pool.
+
+Publication preserves native results: Pub/Sub returns a subscriber count, List
+publication returns list length, and Stream publication returns an entry ID.
+`publish_batch(*messages, list="jobs")` is the native **List-only** operation.
+Options, errors and native pipeline behavior pass through to FastStream; there
+is no custom client per send, serialization format or retry loop. Advanced
+options remain validated by the native library. Direct infra use bypasses Events
+hooks and DI. Live tests require an isolated `TEST_REDIS_URL` and use unique keys.
 
 ## A local job
 
@@ -1217,8 +1242,8 @@ network recovery or exactly-once execution.
 
 Use your existing Pydantic model or dataclass as the payload. A publisher declares
 its backend route; each subscriber references that publisher and selects its
-queue (Rabbit) or consumer group (Kafka). Services enter subscribers through
-ordinary Dishka providers. The first example uses RabbitMQ.
+queue (Rabbit), Kafka consumer group, or Redis Stream/channel configuration.
+Services enter subscribers through ordinary Dishka providers. The first example uses RabbitMQ.
 
 ```python
 import asyncio
@@ -1459,6 +1484,305 @@ Kafka `no_confirm=True` returns the native Future: `after_send` observes that
 return, not the Future's eventual delivery result. Await the returned Future
 explicitly when confirmation is required. No automatic retry or beat is added.
 
+### Redis Streams Events
+
+Install `papilio-tasks[events-redis]`. Use `StreamPublisher[T]` for the stream
+name and `StreamSubscriber[T]` for a typed handler with native `StreamSub`
+configuration. Groups and consumer identities are selected by your application.
+
+```python
+import os
+import socket
+from typing import ClassVar
+
+from dishka import Provider, Scope, provide
+from faststream.redis import RedisBroker as NativeRedisBroker
+from pydantic import BaseModel
+
+from papilio_tasks.apps.events.application import create_app
+from papilio_tasks.apps.events.publishers.streams import StreamPublisher
+from papilio_tasks.apps.events.registry.streams import StreamRegistrar
+from papilio_tasks.apps.events.subscribers.streams import (
+    StreamSub,
+    StreamSubscriber,
+)
+from papilio_tasks.infra.faststream.brokers.backends.redis import RedisBroker
+
+
+class OrderData(BaseModel):
+    id: int
+
+
+class OrderCreated(StreamPublisher[OrderData]):
+    stream: ClassVar[str] = "orders.created"
+
+
+class Finance(StreamSubscriber[OrderData]):
+    publisher = OrderCreated
+    stream: ClassVar[StreamSub] = StreamSub(
+        OrderCreated.stream,
+        group="finance",
+        consumer=f"{socket.gethostname()}-{os.getpid()}",
+    )
+
+    async def run(self, event: OrderData) -> None:
+        print(event.id)
+
+
+class Services(Provider):
+    finance = provide(Finance, scope=Scope.REQUEST)
+
+
+registry = StreamRegistrar(
+    RedisBroker(NativeRedisBroker("redis://localhost:6379/0"))
+)
+registry.publisher(OrderCreated)
+registry.subscriber(Finance)
+app = create_app(registrar=registry, providers=[Services()])
+```
+
+Expose this app to `papilio_tasks events run myapp.events:app`. A producer can
+register only `OrderCreated`, call `await app.connect()` and then
+`await OrderCreated.publish(OrderData(id=42))`. Stop the app in `finally`.
+Publication returns the native stream entry ID (`bytes`), not a consumer result.
+The existing `@publish(OrderCreated, select=...)` decorator also works.
+
+Different groups consume independently. Replicas sharing a group distribute
+messages; choose a distinct consumer name for each active replica. The example
+uses hostname and PID; deployment configuration can supply another identity.
+`StreamSub` also supports reading without a group. Group/consumer combinations,
+starting position, declaration and pending-message recovery follow native
+FastStream configuration. The default new group starts at the stream's current
+end; registration alone does not replay its history.
+
+`registry.subscriber(Finance, stream=StreamSub(...))` can explicitly override the
+class configuration for that process. Its name must match the publisher's stream.
+The registrar copies the selected configuration; it does not mutate the class.
+Manual registration wins over discovery. As with other Events backends, package
+roots go to `create_app(publishers=..., subscribers=...)`, services and hook
+classes go in providers, and `publish_hooks`/`subscribe_hooks` select app hooks.
+`Published.result` preserves the native entry ID; `call.meta` contains `stream`.
+
+The optional inherited `ack_policy` follows explicit non-None registrar argument,
+then class value, then native default. With grouped reads and normal tracking,
+`ACK` removes a processed entry from the group's pending list. It does not delete
+the stream entry. In FastStream 0.7.5, failed `NACK_ON_ERROR` and `REJECT_ON_ERROR`
+handlers leave the entry pending; `MANUAL` also leaves it pending until explicitly
+acknowledged. `ACK` acknowledges even when the handler raises. These outcomes were
+tested against Redis; they do not imply Rabbit-style requeue or dead lettering.
+Unacknowledged entries need the application's selected native recovery mechanism.
+This adapter adds no retry engine, beat or pending-message recovery loop.
+
+Streams, [Pub/Sub Events](#redis-pubsub-events) and
+[List Events](#redis-list-events) classes are available.
+Native `publish_batch` targets a Redis List, not a Stream. Calling infra directly
+bypasses app hooks. Cluster/Sentinel deployments and crash recovery are not covered
+by the current standalone Redis tests.
+
+### Redis Pub/Sub Events
+
+Use the same `papilio-tasks[events-redis]` extra and Redis infra adapter.
+`ChannelPublisher[T]` declares a channel. `ChannelSubscriber[T]` references a
+publisher and can select native `PubSub` configuration for a channel or pattern.
+
+```python
+from typing import ClassVar
+
+from dishka import Provider, Scope, provide
+from faststream.redis import RedisBroker as NativeRedisBroker
+from pydantic import BaseModel
+
+from papilio_tasks.apps.events import publish
+from papilio_tasks.apps.events.application import create_app
+from papilio_tasks.apps.events.publishers.channels import ChannelPublisher
+from papilio_tasks.apps.events.registry.channels import ChannelRegistrar
+from papilio_tasks.apps.events.subscribers.channels import (
+    ChannelSubscriber,
+    PubSub,
+)
+from papilio_tasks.infra.faststream.brokers.backends.redis import RedisBroker
+
+
+class Price(BaseModel):
+    value: int
+
+
+class GoldChanged(ChannelPublisher[Price]):
+    channel: ClassVar[str] = "prices.gold"
+
+
+class Display(ChannelSubscriber[Price]):
+    publisher = GoldChanged
+
+    async def run(self, event: Price) -> None:
+        print(event.value)
+
+
+class AllPrices(Display):
+    channel: ClassVar[PubSub | None] = PubSub("prices.*", pattern=True)
+
+
+class Services(Provider):
+    display = provide(Display, scope=Scope.REQUEST)
+    all_prices = provide(AllPrices, scope=Scope.REQUEST)
+
+
+registry = ChannelRegistrar(
+    RedisBroker(NativeRedisBroker("redis://localhost:6379/0"))
+)
+registry.publisher(GoldChanged)
+registry.subscriber(Display)
+registry.subscriber(AllPrices)
+app = create_app(registrar=registry, providers=[Services()])
+
+
+@publish(GoldChanged, select=lambda result: Price(value=result["price"]))
+async def update_price() -> dict:
+    return {"price": 42}
+```
+
+`Display` uses `GoldChanged.channel` by default. An explicit
+`registry.subscriber(Display, channel=PubSub(...))` takes precedence over the
+inherited class setting; a non-None class setting takes precedence over the
+publisher-derived channel. `None` means fallback at that level. Assigning
+`channel = None` on a subclass restores its publisher-derived default.
+Selected native configuration is copied; user classes are not mutated.
+
+An explicit channel or pattern intentionally can cover other publishers. Its
+matching is delegated to FastStream/Redis, and its payloads must be compatible
+with the subscriber's `run(event: T)` type. No Python pattern-matching or routing
+engine is added. Native `polling_interval` and other explicit registrar options
+retain their native behavior.
+
+Use `create_app` with module discovery, providers, `publish_hooks` and
+`subscribe_hooks` as with other Events backends. Expose the app to
+`papilio_tasks events run myapp.events:app`. Producer-only apps call `connect()`,
+publish through `await GoldChanged.publish(Price(value=42))`, and `stop()` in
+`finally`. Direct publication and the decorator share the registered sender and
+hooks. Publish hook metadata contains the registered `channel`; per-call routing
+options may select another channel. `Published.result` preserves the native
+integer recipient count. Zero recipients is a successful publication with result
+`0`, not a send exception; it still invokes `after_send`.
+
+Each active matching subscription receives a broadcast, including subscriptions
+in separate worker processes. Multiple workers do not form a consumer group.
+Redis's publication count is not proof that handlers completed successfully.
+Messages sent while subscribers are disconnected are not retained or replayed.
+Pub/Sub has no durable acknowledgement, pending list or consumer group, so these
+are not class settings on `ChannelSubscriber`. Native advanced options do not
+add durable retries. Use Streams when those delivery mechanisms are needed.
+
+The live checks cover separate processes, exact and wildcard channels, native
+counts including zero, headers, DI/hooks, clean shutdown and reconnect without
+replay. Cluster/sharded Pub/Sub and network-failure recovery are not covered.
+
+### Redis List Events
+
+Use `papilio-tasks[events-redis]` and the same Redis infra adapter.
+`ListPublisher[T]` declares a list name. `ListSubscriber[T]` references that
+publisher; optional native `ListSub` configures polling and batch consumption.
+
+```python
+from typing import ClassVar
+
+from dishka import Provider, Scope, provide
+from faststream.redis import RedisBroker as NativeRedisBroker
+from pydantic import BaseModel
+
+from papilio_tasks.apps.events import publish
+from papilio_tasks.apps.events.application import create_app
+from papilio_tasks.apps.events.publishers.lists import ListPublisher
+from papilio_tasks.apps.events.registry.lists import ListRegistrar
+from papilio_tasks.apps.events.subscribers.lists import ListSub, ListSubscriber
+from papilio_tasks.infra.faststream.brokers.backends.redis import RedisBroker
+
+
+class Order(BaseModel):
+    id: int
+
+
+class Created(ListPublisher[Order]):
+    list: ClassVar[str] = "orders.finance"
+
+
+class Finance(ListSubscriber[Order]):
+    publisher = Created
+
+    async def run(self, event: Order) -> None:
+        print(event.id)
+
+
+class Services(Provider):
+    finance = provide(Finance, scope=Scope.REQUEST)
+
+
+registry = ListRegistrar(
+    RedisBroker(NativeRedisBroker("redis://localhost:6379/0"))
+)
+registry.publisher(Created)
+registry.subscriber(Finance)
+app = create_app(registrar=registry, providers=[Services()])
+
+
+@publish(Created, select=lambda result: Order(id=result["id"]))
+async def create_order() -> dict:
+    return {"id": 42}
+```
+
+The subscriber defaults to `ListSub(Created.list)`. An explicit
+`registry.subscriber(Finance, list=ListSub(...))` takes precedence over the
+inherited class setting; `None` falls back to the class setting, then the
+publisher-derived default. Assigning `list = None` on a subclass restores that
+default. The selected list name must match the referenced publisher. Native
+configuration is copied and user classes are not mutated.
+
+For batch consumption, use the following subscriber instead of `Finance` and
+register `FinanceBatch` in your provider. The type alias keeps the payload type
+separate from the class's `list` configuration attribute:
+
+```python
+type Orders = list[Order]
+
+
+class FinanceBatch(ListSubscriber[Orders]):
+    publisher = Created
+    list: ClassVar[ListSub | None] = ListSub(
+        Created.list, batch=True, max_records=100, polling_interval=0.1
+    )
+
+    async def run(self, event: Orders) -> None:
+        print([order.id for order in event])
+```
+
+A batch contains up to `max_records` available messages; it does not wait to
+fill that size. Subscribe hooks run once for each handler invocation, receiving
+the decoded list for a batch. Each invocation shares its Dishka scope with its
+hooks and injected services.
+
+Module discovery, `publish_hooks`, `subscribe_hooks`, the `publish` decorator
+and `papilio_tasks events run myapp.events:app` work as with the other backends.
+Producer-only apps use `connect()`, `await Created.publish(Order(id=42))` and
+`stop()` in `finally`. Publication returns the native integer list length after
+insertion, not a count of successful handlers. Hook metadata includes the
+registered `list`; native per-call routing options may override the destination.
+Infra `publish_batch(..., list=...)` remains available, but direct infra calls
+bypass Events publish hooks. There is no class-level bulk publishing API.
+
+Messages remain in the list while workers are offline, subject to Redis data
+retention and persistence configuration. Consumers of the same list compete:
+each popped entry goes to one consumer, including across worker processes. Use
+separate destinations when finance and notifications must both receive a copy.
+List insertion/pop order does not guarantee completion order across workers.
+
+FastStream removes entries with `BLPOP` (single) or `LPOP` (batch) **before**
+calling the handler. A failure or worker crash after removal does not restore
+the message. List subscribers therefore expose no consumer-group or durable
+acknowledgement settings; hooks alone do not provide crash-safe delivery.
+Use Streams with an explicit recovery strategy when that behavior is needed.
+The live tests cover backlog, typed single/batch delivery, failure without
+requeue, competing CLI processes and resource cleanup. Redis restart persistence,
+cluster operation and network-failure recovery are outside these checks.
+
 ### Events CLI
 
 Expose the result of `create_app(...)` as `app` in your entry module, then run:
@@ -1668,8 +1992,8 @@ local selections remain available.
 is the native send exception. `call.sender` is the qualified Publisher class,
 `call.args` contains the payload, and `call.kwargs` captures publication options.
 `call.meta` describes the registered Rabbit `exchange` and `routing_key`, or
-Kafka `topic`. It is not a claim about the final destination if per-call options
-override the route.
+Kafka `topic`, Redis `stream`, Pub/Sub `channel`, or Redis `list`. It is not a claim about
+the final destination if per-call options override the route.
 Options and metadata are shallow read-only mappings, not serialized snapshots.
 After-send or scope-cleanup failure raises `PublishError(result)` without resending
 or calling send-error hooks. Send errors and cancellation retain their original
