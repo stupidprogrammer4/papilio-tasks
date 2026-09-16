@@ -1,6 +1,18 @@
 <p align="center">
-  <img src="docs/assets/logo.webp" alt="Papilio Tasks logo" width="520">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.png">
+    <img src="docs/assets/logo-light.png" alt="Papilio Tasks" width="560">
+  </picture>
 </p>
+<p align="center"><em>Background jobs and scheduling for modular Python applications.</em></p>
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.13%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.13+">
+  <a href="https://github.com/taskiq-python/taskiq"><img src="https://img.shields.io/badge/powered_by-Taskiq-D94A28?style=flat-square" alt="Powered by Taskiq"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-202020?style=flat-square" alt="MIT License"></a>
+</p>
+
+---
 
 Modular background jobs for Python 3.13+. Schedulers and projections use Taskiq
 and ordinary Dishka providers. Projections run read/transform/write pipelines
