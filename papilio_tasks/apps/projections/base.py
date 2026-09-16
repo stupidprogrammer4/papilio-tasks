@@ -33,6 +33,7 @@ class Projection[T, D, R](ProjectionContract[T, D, R], ABC):
     reference; the pipeline does not copy data, retry or roll back writes.
     """
 
+    _backend: ClassVar[str | None] = None
     retry: ClassVar[Retry | None] = None
     publish_hooks: ClassVar[type[PublishHooks] | None] = None
 

@@ -20,10 +20,13 @@ class Payload(BaseModel):
 
 
 @pytest.mark.parametrize("kind", ["redis", "rabbit"])
+@pytest.mark.parametrize("routed", [False, True])
 @pytest.mark.parametrize(
     "failure", [None, "write", "after_write", "error_hook"]
 )
-async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
+async def test_projection_live_transport_hooks_results_and_ack(
+    kind, failure, routed
+):
     redis_url = os.getenv("TEST_REDIS_URL")
     rabbit_url = os.getenv("TEST_RABBIT_URL")
     if not redis_url or (kind == "rabbit" and not rabbit_url):
@@ -33,13 +36,30 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
     from taskiq_redis import RedisAsyncResultBackend
 
     prefix = f"papilio-projection-{uuid4().hex}"
+    target = prefix + "-products" if routed else prefix
+    projection, direct, registrar = Projection, Direct, Registrar
     if kind == "rabbit":
         pytest.importorskip("taskiq_aio_pika")
         from taskiq_aio_pika import Exchange, Queue
 
+        from papilio_tasks.apps.projections.backends.rabbit import (
+            RabbitDirect,
+            RabbitProjection,
+        )
+        from papilio_tasks.apps.projections.registry.rabbit import (
+            RabbitRegistrar,
+        )
         from papilio_tasks.infra.taskiq.brokers.backends.rabbit import (
             RabbitBroker,
         )
+
+        spec = Queue(name=target, routing_key=target + ".sync")
+        if routed:
+            projection, direct, registrar = (
+                RabbitProjection,
+                RabbitDirect,
+                RabbitRegistrar,
+            )
 
         def transport():
             return RabbitBroker(
@@ -49,9 +69,25 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
                 dead_letter_queue=Queue(name=prefix + "-dead"),
             )
     else:
+        from papilio_tasks.apps.projections.backends.redis import (
+            RedisDirect,
+            RedisProjection,
+            RedisQueue,
+        )
+        from papilio_tasks.apps.projections.registry.redis import (
+            RedisRegistrar,
+        )
         from papilio_tasks.infra.taskiq.brokers.backends.redis import (
             RedisStreamBroker,
         )
+
+        spec = RedisQueue(target)
+        if routed:
+            projection, direct, registrar = (
+                RedisProjection,
+                RedisDirect,
+                RedisRegistrar,
+            )
 
         def transport():
             return RedisStreamBroker(
@@ -59,6 +95,7 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
                 queue_name=prefix,
                 consumer_group_name=prefix,
                 consumer_id="0",
+                additional_streams={target: ">"} if routed else None,
             )
 
     producer, consumer = transport(), transport()
@@ -125,7 +162,9 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
         def __init__(self, session: Session):
             super().__init__(**hooks(session, "shared"))
 
-    class Product(Projection[Payload, str, int]):
+    class Product(projection[Payload, str, int]):
+        queue = spec if routed else None
+
         def __init__(self, session: Session):
             super().__init__(hooks=Hooks(**hooks(session, "local")))
             self.session = session
@@ -145,7 +184,9 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
                 raise ValueError("write failed")
             return int(data)
 
-    class Products(Direct[list[int], int]):
+    class Products(direct[list[int], int]):
+        queue = spec if routed else None
+
         def __init__(self, session: Session):
             super().__init__(hooks=Hooks(**hooks(session, "local")))
             self.session = session
@@ -168,27 +209,33 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
             current.closed = True
             closed.append(current)
 
-    publisher = Registrar(producer, hooks=AppHooks)
-    registry = Registrar(consumer, hooks=AppHooks)
+    publisher = registrar(producer, hooks=AppHooks)
+    registry = registrar(consumer, hooks=AppHooks)
     single_task = publisher.include(Product, name="products.single")
     batch_task = publisher.include(Products, name="products.batch")
     single, batch = Product, Products
+    if routed:
+        consumer.add_queue(spec)
+        if kind == "rabbit":
+            consumer.consume(target)
     # Only one Papilio class binding per process. Simulate a remote worker with
     # native registrations on its independent transport, not a second binding.
     consumer.register(
         single_task.original_func,
         name=single_task.task_name,
         labels=single_task.labels,
+        queue=target if routed else None,
     )
     consumer.register(
         batch_task.original_func,
         name=batch_task.task_name,
         labels=batch_task.labels,
+        queue=target if routed else None,
     )
     assert (
         single_task.labels["queue_name"]
         == batch_task.labels["queue_name"]
-        == prefix
+        == (spec.routing_key if routed and kind == "rabbit" else target)
     )
     provider = Provider(scope=Scope.REQUEST)
     provider.provide(session, provides=Session)
@@ -286,17 +333,24 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
         assert [phase for marker, phase in calls if marker == 2] == stages
         if kind == "rabbit":
             async with consumer.native.write_conn.channel() as channel:
-                queue = await channel.get_queue(prefix)
+                queue = await channel.get_queue(target)
                 assert queue.declaration_result.message_count == 0
                 assert await queue.get(fail=False) is None
+                if routed:
+                    default = await channel.get_queue(prefix)
+                    assert await default.get(fail=False) is None
         else:
             async with Redis.from_url(redis_url) as redis:
-                assert (await redis.xpending(prefix, prefix))["pending"] == 0
+                assert (await redis.xpending(target, prefix))["pending"] == 0
+                if routed:
+                    assert await redis.xlen(prefix) == 0
     finally:
         try:
             if kind == "rabbit" and consumer.native.write_conn is not None:
                 async with consumer.native.write_conn.channel() as channel:
                     await channel.queue_delete(prefix)
+                    if routed:
+                        await channel.queue_delete(target)
                     await channel.queue_delete(prefix + "-dead")
                     await channel.exchange_delete(prefix)
         finally:

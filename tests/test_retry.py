@@ -363,16 +363,50 @@ async def test_retry_through_real_broker_and_redis_source(kind, app):
     factory = create_broker
     labels = None
     if app == "projection":
-        from papilio_tasks.apps.projections import Direct
         from papilio_tasks.apps.projections.application import (
             create_broker as factory,
         )
-        from papilio_tasks.apps.projections.registry import (
-            Registrar as Projections,
-        )
+
+        if kind == "rabbit":
+            from papilio_tasks.apps.projections.backends.rabbit import (
+                RabbitDirect as Direct,
+            )
+            from papilio_tasks.apps.projections.backends.rabbit import (
+                RabbitQueue as Queue,
+            )
+            from papilio_tasks.apps.projections.registry.rabbit import (
+                RabbitRegistrar as Projections,
+            )
+        else:
+            from papilio_tasks.apps.projections.backends.redis import (
+                RedisDirect as Direct,
+            )
+            from papilio_tasks.apps.projections.backends.redis import (
+                RedisQueue as Queue,
+            )
+            from papilio_tasks.apps.projections.registry.redis import (
+                RedisRegistrar as Projections,
+            )
+
+        destination = name + "-products"
+        if kind == "redis":
+            from papilio_tasks.infra.taskiq.brokers.backends.redis import (
+                RedisStreamBroker,
+            )
+
+            transport = RedisStreamBroker(
+                url,
+                queue_name=name,
+                additional_streams={destination: ">"},
+                consumer_group_name=name,
+                consumer_id="0",
+            )
+        else:
+            transport = registry.broker
 
         class Project(Direct[list[int], None]):
             retry = Report.retry
+            queue = Queue(name=destination)
 
             def __init__(self):
                 super().__init__()
@@ -386,10 +420,11 @@ async def test_retry_through_real_broker_and_redis_source(kind, app):
                     raise ConnectionError("temporary")
 
         Report = Project
-        registry = Projections(registry.broker)
-        labels = {"queue_name": name}
+        registry = Projections(transport)
 
     registry.include(Report, name="report", labels=labels)
+    if app == "projection" and kind == "rabbit":
+        registry.broker.consume(destination)
     source = RedisSource(redis_url, prefix=name)
     reader = RedisSource(redis_url, prefix=name)
     broker = factory(
@@ -418,7 +453,9 @@ async def test_retry_through_real_broker_and_redis_source(kind, app):
                     assert len(tasks) == 1
                     task = tasks[0]
                     assert task.task_id == handle.task_id
-                    assert task.labels["queue_name"] == name
+                    assert task.labels["queue_name"] == (
+                        destination if app == "projection" else name
+                    )
                     assert "delay" not in task.labels
                     await asyncio.sleep(
                         max(0, (task.time - datetime.now(UTC)).total_seconds())
@@ -433,6 +470,8 @@ async def test_retry_through_real_broker_and_redis_source(kind, app):
         if kind == "rabbit":
             async with broker.write_conn.channel() as channel:
                 await channel.queue_delete(name)
+                if app == "projection":
+                    await channel.queue_delete(destination)
                 await channel.queue_delete(name + "-dead")
                 await channel.exchange_delete(name)
         await broker.shutdown()

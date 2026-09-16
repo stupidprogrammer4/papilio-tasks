@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from functools import wraps
 from inspect import Parameter, isabstract, iscoroutinefunction, signature
 from typing import Any, get_type_hints
@@ -17,6 +18,8 @@ from ..base import Projection
 
 class Registrar:
     """Register tasks; the caller owns container setup and lifetime."""
+
+    _backend: str | None = None
 
     def __init__(
         self,
@@ -38,8 +41,21 @@ class Registrar:
         name: str | None = None,
         labels: dict[str, Any] | None = None,
     ) -> AsyncTaskiqDecoratedTask[Any, R]:
+        execute, name, labels = self._prepare(cls, name, labels)
+        task = self.broker.register(execute, name=name, labels=labels)
+        bindings.add(cls, task)
+        return task
+
+    def _prepare[T, D, R](
+        self,
+        cls: type[Projection[T, D, R]],
+        name: str | None,
+        labels: dict[str, Any] | None,
+    ) -> tuple[Callable[..., Awaitable[R]], str, dict[str, Any]]:
         if not isinstance(cls, type) or not issubclass(cls, Projection):
             raise TypeError("Include a Projection class")
+        if cls._backend != self._backend:
+            raise TypeError("Use the matching backend Projection registrar")
         if isabstract(cls) or not all(
             iscoroutinefunction(getattr(cls, method))
             for method in ("read", "transform", "write")
@@ -47,6 +63,12 @@ class Registrar:
             raise TypeError("Projection must implement async operations")
         bindings.check(cls)
         labels = retry_labels(self.broker.native, cls.retry, labels)
+        if name is None:
+            name = f"{cls.__module__}.{cls.__qualname__}"
+        if not name:
+            raise ValueError("Task name cannot be empty")
+        if self.broker.native.find_task(name) is not None:
+            raise ValueError(f"Task name already registered: {name}")
 
         read = cls.read
         hints = get_type_hints(read)
@@ -96,12 +118,4 @@ class Registrar:
         # Native DI reads __signature__; exclude its container from Taskiq's
         # annotation-based positional payload conversion, as for schedulers.
         injected.__annotations__.pop("dishka_container", None)
-        task = self.broker.register(
-            injected,
-            name=name
-            if name is not None
-            else f"{cls.__module__}.{cls.__qualname__}",
-            labels=labels,
-        )
-        bindings.add(cls, task)
-        return task
+        return injected, name, labels
