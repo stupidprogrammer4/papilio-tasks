@@ -30,6 +30,7 @@ pip install 'papilio-tasks[projection]'        # in-process Memory default
 pip install 'papilio-tasks[projection-rabbit]' # RabbitMQ
 pip install 'papilio-tasks[projection-redis]'  # Redis Streams / retry source
 pip install 'papilio-tasks[events-rabbit]'     # FastStream RabbitMQ events
+pip install 'papilio-tasks[events-kafka]'      # FastStream Kafka infrastructure
 ```
 
 A bare `papilio-tasks` installation provides the lightweight CLI and discovery
@@ -112,8 +113,77 @@ from `faststream.rabbit`) and publish with `mandatory=True`. The native channel
 defaults to `on_return_raises=False`. The adapter adds no retry, default queue or
 delivery guarantees.
 Use `native` for further FastStream features. TestRabbitBroker is a testing utility,
-not a production in-memory broker. Additional backend coverage for both runtimes
-is deferred until the Events path is complete.
+not a production in-memory broker. Kafka infrastructure is also available below;
+other backends for both runtimes remain planned.
+
+### Kafka infrastructure
+
+`events-kafka` installs FastStream's `aiokafka` integration. Import its adapter
+explicitly; RabbitMQ, Redis and Taskiq are not required by this extra. This step
+provides infrastructure only: Kafka-specific Events classes and a registrar are
+not yet implemented.
+
+```python
+from faststream import AckPolicy
+from faststream.kafka import KafkaBroker as NativeKafkaBroker
+
+from papilio_tasks.infra.faststream.brokers.backends.kafka import KafkaBroker
+
+broker = KafkaBroker(NativeKafkaBroker("localhost:9092"))
+
+@broker.subscriber(
+    "orders",
+    group_id="finance",
+    auto_offset_reset="earliest",
+    ack_policy=AckPolicy.ACK,
+)
+async def finance(event: dict) -> None:
+    print(event)
+
+publisher = broker.publisher("orders")
+
+async def send() -> None:
+    try:
+        await broker.connect()
+        metadata = await publisher.publish({"order_id": 42}, key=b"customer-7")
+        await broker.publish_batch(
+            {"order_id": 43}, {"order_id": 44}, topic="orders", partition=0,
+        )
+    finally:
+        await broker.stop()
+```
+
+`connect()` starts publication resources without starting subscribers. A consumer
+process calls `start()`, waits for its application shutdown signal, then `stop()`.
+Construction and registration perform no network I/O. Configure native settings
+such as security and serialization on `NativeKafkaBroker`; the adapter reuses
+that instance. Kafka's native `connect()` result is its consumer factory, not a
+Rabbit-style connection object.
+
+`KafkaContract` adds `subscriber(*topics, **options)`,
+`publisher(topic, **options)`, `publish(message, topic, **options)` and
+`publish_batch(*messages, topic=..., **options)` to the common lifecycle.
+Publisher/subscriber factories return native objects, including batch variants.
+For a native batch publisher, call `publisher.publish(message1, message2)`.
+Single-message options include key and partition; batch options follow FastStream's
+native signature. Options and errors are forwarded without a custom retry loop.
+
+Default publication returns native `RecordMetadata`. With `no_confirm=True`,
+awaiting `publish` or `publish_batch` returns the native Future; await that Future
+if you need the eventual metadata or delivery error. Neither result means the
+consumer completed its business work. Advanced keyword options are validated by
+the native library, rather than exhaustively typed by this thin adapter.
+
+Different consumer groups can consume the same records independently. Consumers
+inside one group share partition assignments; this is Kafka's group model.
+Topic creation, partition counts and retention remain deployment/native admin
+responsibilities. The adapter adds no topic administration or Rabbit queue model.
+Acknowledgement and offset behavior follow Kafka's native FastStream settings.
+
+Live tests use `TEST_KAFKA_URL=localhost:9092` against an isolated Kafka service;
+they create and delete uniquely named topics. They cover single/batch messages,
+metadata, keys/headers/partitions, two consumers sharing a group, and a separate
+batch consumer group. They are not a throughput or failure-recovery benchmark.
 
 ## A local job
 
