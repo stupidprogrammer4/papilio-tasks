@@ -30,7 +30,7 @@ pip install 'papilio-tasks[projection]'        # in-process Memory default
 pip install 'papilio-tasks[projection-rabbit]' # RabbitMQ
 pip install 'papilio-tasks[projection-redis]'  # Redis Streams / retry source
 pip install 'papilio-tasks[events-rabbit]'     # FastStream RabbitMQ events
-pip install 'papilio-tasks[events-kafka]'      # FastStream Kafka infrastructure
+pip install 'papilio-tasks[events-kafka]'      # FastStream Kafka events
 ```
 
 A bare `papilio-tasks` installation provides the lightweight CLI and discovery
@@ -119,9 +119,9 @@ other backends for both runtimes remain planned.
 ### Kafka infrastructure
 
 `events-kafka` installs FastStream's `aiokafka` integration. Import its adapter
-explicitly; RabbitMQ, Redis and Taskiq are not required by this extra. This step
-provides infrastructure only: Kafka-specific Events classes and a registrar are
-not yet implemented.
+explicitly; RabbitMQ, Redis and Taskiq are not required by this extra. The Events
+layer also provides Kafka publisher/subscriber classes and a registrar;
+see [Kafka Events](#kafka-events) for application setup.
 
 ```python
 from faststream import AckPolicy
@@ -1216,8 +1216,9 @@ network recovery or exactly-once execution.
 ## Events
 
 Use your existing Pydantic model or dataclass as the payload. A publisher declares
-its exchange/route; each subscriber references that publisher and selects its own
-queue. Services enter subscribers through ordinary Dishka providers.
+its backend route; each subscriber references that publisher and selects its
+queue (Rabbit) or consumer group (Kafka). Services enter subscribers through
+ordinary Dishka providers. The first example uses RabbitMQ.
 
 ```python
 import asyncio
@@ -1369,6 +1370,94 @@ app/native broker is not reassembled with another container: create a fresh nati
 broker and registrar. Use separate publisher subclasses for simultaneous producer
 bindings to different brokers. Lifecycle calls can integrate with the host
 application's entry point; standalone consumers use the Events CLI below.
+
+### Kafka Events
+
+Install `papilio-tasks[events-kafka]`. Define the topic on a `KafkaPublisher`
+and an explicit, nonempty `group_id` on each `KafkaSubscriber`. Use different
+consumer groups for independent business handlers; replicas of the same handler
+share a group and Kafka distributes partitions between them.
+
+```python
+from typing import ClassVar
+
+from dishka import Provider, Scope, provide
+from faststream.kafka import KafkaBroker as NativeKafkaBroker
+from pydantic import BaseModel
+
+from papilio_tasks.apps.events import publish
+from papilio_tasks.apps.events.application import create_app
+from papilio_tasks.apps.events.publishers.kafka import KafkaPublisher
+from papilio_tasks.apps.events.registry.kafka import KafkaRegistrar
+from papilio_tasks.apps.events.subscribers.kafka import KafkaSubscriber
+from papilio_tasks.infra.faststream.brokers.backends.kafka import KafkaBroker
+
+
+class OrderData(BaseModel):
+    id: int
+
+
+class OrderCreated(KafkaPublisher[OrderData]):
+    topic: ClassVar[str] = "orders.created"
+
+
+class Accounting:
+    async def record(self, order: OrderData) -> None:
+        print(order.id)
+
+
+class Finance(KafkaSubscriber[OrderData]):
+    publisher = OrderCreated
+    group_id: ClassVar[str] = "finance.orders"
+
+    def __init__(self, accounting: Accounting) -> None:
+        self.accounting = accounting
+
+    async def run(self, event: OrderData) -> None:
+        await self.accounting.record(event)
+
+
+class Services(Provider):
+    accounting = provide(Accounting, scope=Scope.REQUEST)
+    finance = provide(Finance, scope=Scope.REQUEST)
+
+
+registry = KafkaRegistrar(KafkaBroker(NativeKafkaBroker("localhost:9092")))
+registry.publisher(OrderCreated)
+registry.subscriber(Finance, auto_offset_reset="earliest")
+app = create_app(registrar=registry, providers=[Services()])
+
+
+@publish(OrderCreated, select=lambda result: OrderData(id=result["id"]))
+async def create_order() -> dict:
+    return {"id": 42}
+```
+
+Run this module with `papilio_tasks events run myapp.events:app`. Producers can
+assemble an app with only publishers, call `await app.connect()`, publish with
+`await OrderCreated.publish(OrderData(id=42), key=b"customer-7")`, and stop it in
+`finally`. `publish` and the decorator use the same registered sender and hooks;
+the decorator returns the wrapped function's original result.
+
+For modular apps, put declarations in `publishers.py` and `subscribers.py` (or
+packages of those names) and pass their package roots through `create_app`'s
+`publishers` and `subscribers` arguments. Providers remain explicit. Manual
+registration before discovery preserves its native options. Pass `publish_hooks`
+and `subscribe_hooks` to `create_app` exactly as with Rabbit; hook classes and
+subscribers resolve through the provided Dishka container.
+
+`ack_policy` is an optional inherited class variable. Selection is explicit
+non-None registrar argument, then class value, then the native default. `None`
+means no selection at that level. Native Kafka settings, including
+`enable_auto_commit`, still determine offset behavior; Rabbit requeue/dead-letter
+semantics do not carry over to Kafka. Advanced options belong to native broker
+configuration or registrar calls. Topic administration remains outside the app.
+
+This app API publishes one event per call. Native batch operations remain
+available through the infra adapter; they bypass app-level publication hooks.
+Kafka `no_confirm=True` returns the native Future: `after_send` observes that
+return, not the Future's eventual delivery result. Await the returned Future
+explicitly when confirmation is required. No automatic retry or beat is added.
 
 ### Events CLI
 
@@ -1578,8 +1667,9 @@ local selections remain available.
 `Published[R].result` is the native return, including `None`. `PublishFailed.error`
 is the native send exception. `call.sender` is the qualified Publisher class,
 `call.args` contains the payload, and `call.kwargs` captures publication options.
-`call.meta` describes the registered Rabbit `exchange` and `routing_key`; it is
-not a claim about the final destination if per-call options override the route.
+`call.meta` describes the registered Rabbit `exchange` and `routing_key`, or
+Kafka `topic`. It is not a claim about the final destination if per-call options
+override the route.
 Options and metadata are shallow read-only mappings, not serialized snapshots.
 After-send or scope-cleanup failure raises `PublishError(result)` without resending
 or calling send-error hooks. Send errors and cancellation retain their original
