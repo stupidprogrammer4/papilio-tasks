@@ -32,6 +32,7 @@ pip install 'papilio-tasks[projection-redis]'  # Redis Streams / retry source
 pip install 'papilio-tasks[events-rabbit]'     # FastStream RabbitMQ events
 pip install 'papilio-tasks[events-kafka]'      # FastStream Kafka events
 pip install 'papilio-tasks[events-redis]'      # FastStream Redis Streams / PubSub / List events
+pip install 'papilio-tasks[events-nats]'       # NATS Core and JetStream events
 ```
 
 A bare `papilio-tasks` installation provides the lightweight CLI and discovery
@@ -209,6 +210,82 @@ Options, errors and native pipeline behavior pass through to FastStream; there
 is no custom client per send, serialization format or retry loop. Advanced
 options remain validated by the native library. Direct infra use bypasses Events
 hooks and DI. Live tests require an isolated `TEST_REDIS_URL` and use unique keys.
+
+### NATS infrastructure
+
+Install `papilio-tasks[events-nats]`. `NatsBroker` wraps one caller-configured
+`faststream.nats.NatsBroker`; native `JStream`, `PullSub` and consumer settings
+remain available without replacement configuration classes.
+
+```python
+from faststream.nats import JStream, PullSub
+from faststream.nats import NatsBroker as NativeNatsBroker
+
+from papilio_tasks.infra.faststream.brokers.backends.nats import NatsBroker
+
+
+broker = NatsBroker(NativeNatsBroker("nats://localhost:4222"))
+
+
+@broker.subscriber("orders.preview")
+async def preview(order: dict) -> dict:
+    return {"id": order["id"], "accepted": True}
+
+
+@broker.subscriber("orders.created", queue="finance", no_reply=True)
+async def finance(order: dict) -> None:
+    print(order["id"])
+
+
+@broker.subscriber(
+    "orders.history",
+    stream=JStream("history", subjects=["orders.history"]),
+    durable="archive",
+    pull_sub=PullSub(batch_size=10),
+    no_reply=True,
+)
+async def archive(order: dict) -> None:
+    print(order["id"])
+```
+
+`NatsContract` exposes the common `connect/start/stop/native` lifecycle and native
+`subscriber`, `publisher`, `publish` and `request`. Registration returns native
+publisher/subscriber objects and performs no network I/O. `connect()` returns
+and reuses the native NATS client for producer-only use; `start()` also starts
+subscriptions and performs configured native stream declarations. Use `stop()`
+in `finally` to close resources. A producer that only calls `connect()` needs
+its target JetStream stream to exist already. `JStream(..., declare=False)` lets
+the application use an externally provisioned stream.
+
+With the server's JetStream enabled and the handlers above started:
+
+- `await broker.publish({"id": 1}, "orders.created")` returns `None`.
+- `await broker.publish({"id": 1}, "orders.history", stream="history")`
+  returns native `PubAck`; this confirms storage, not successful handler execution.
+- `response = await broker.request({"id": 1}, "orders.preview", timeout=3)`
+  returns native `NatsMessage`; `await response.decode()` returns the reply body.
+  Set `stream=` explicitly when requesting a JetStream handler's reply.
+
+Core NATS delivers to active subscriptions. Subscribers in the same queue group
+share work; independent subscriptions each receive a copy. Core does not retain
+messages for disconnected subscribers or provide durable processing ACKs.
+JetStream adds storage and consumer acknowledgement. Stream retention, durable
+consumer identity, push/pull mode and delivery policy remain native configuration.
+An ACK updates consumer state; whether an entry is removed depends on stream
+retention policy. For typed batch delivery, use `PullSub(batch=True, ...)` and a
+handler accepting `list[T]`. Core and JetStream are different delivery modes.
+
+Headers, correlation IDs, reply subjects, timeouts and native errors pass through.
+No custom queue declaration, serialization, recovery or retry loop is added.
+Advanced operations are accessible through `broker.native`. Direct infra calls
+do not run Events hooks or resolve app providers. For application integration,
+see [NATS Core Events](#nats-core-events) and
+[JetStream Events](#jetstream-events).
+
+Live tests use an isolated `TEST_NATS_URL` with JetStream enabled. They cover Core
+broadcast/queue groups, offline backlog with push/pull and batch consumers,
+native `PubAck` and consumer ACK, request/reply, metadata and connection cleanup.
+They do not establish cluster failover, restart durability or throughput.
 
 ## A local job
 
@@ -1242,7 +1319,7 @@ network recovery or exactly-once execution.
 
 Use your existing Pydantic model or dataclass as the payload. A publisher declares
 its backend route; each subscriber references that publisher and selects its
-queue (Rabbit), Kafka consumer group, or Redis Stream/channel configuration.
+queue (Rabbit), Kafka consumer group, Redis configuration or NATS subject/group.
 Services enter subscribers through ordinary Dishka providers. The first example uses RabbitMQ.
 
 ```python
@@ -1783,6 +1860,205 @@ The live tests cover backlog, typed single/batch delivery, failure without
 requeue, competing CLI processes and resource cleanup. Redis restart persistence,
 cluster operation and network-failure recovery are outside these checks.
 
+### NATS Core Events
+
+Use `papilio-tasks[events-nats]`. `NatsPublisher[T]` declares a subject;
+`NatsSubscriber[T]` references a publisher and optionally selects a subject
+pattern and queue group. Group names are chosen by the application.
+
+```python
+from typing import ClassVar
+
+from dishka import Provider, Scope, provide
+from faststream.nats import NatsBroker as NativeNatsBroker
+from pydantic import BaseModel
+
+from papilio_tasks.apps.events import publish
+from papilio_tasks.apps.events.application import create_app
+from papilio_tasks.apps.events.publishers.nats import NatsPublisher
+from papilio_tasks.apps.events.registry.nats import NatsRegistrar
+from papilio_tasks.apps.events.subscribers.nats import NatsSubscriber
+from papilio_tasks.infra.faststream.brokers.backends.nats import NatsBroker
+
+
+class Order(BaseModel):
+    id: int
+
+
+class OrderCreated(NatsPublisher[Order]):
+    subject: ClassVar[str] = "orders.created"
+
+
+class Finance(NatsSubscriber[Order]):
+    publisher = OrderCreated
+    queue: ClassVar[str] = "finance"
+
+    async def run(self, event: Order) -> None:
+        print(event.id)
+
+
+class Notifications(Finance):
+    subject: ClassVar[str | None] = "orders.*"
+    queue: ClassVar[str] = "notifications"
+
+
+class Services(Provider):
+    finance = provide(Finance, scope=Scope.REQUEST)
+    notifications = provide(Notifications, scope=Scope.REQUEST)
+
+
+registry = NatsRegistrar(
+    NatsBroker(NativeNatsBroker("nats://localhost:4222"))
+)
+registry.publisher(OrderCreated)
+registry.subscriber(Finance)
+registry.subscriber(Notifications)
+app = create_app(registrar=registry, providers=[Services()])
+
+
+@publish(OrderCreated, select=lambda result: Order(id=result["id"]))
+async def create_order() -> dict:
+    return {"id": 42}
+```
+
+The subscriber's default `subject = None` uses its publisher's subject.
+Explicit `registry.subscriber(..., subject=..., queue=...)` values override
+inherited class values. `None` falls back at that level; `queue=""` explicitly
+clears a class group. A subclass can restore its publisher-derived subject with
+`subject = None`. Registration does not mutate user classes.
+
+With no group (`queue = ""`, the default), every active subscription receives
+a copy. Members of the same queue group share matching messages across workers.
+In the example, finance and notifications each receive a copy; replicas within
+each named group share that group's work. A queue group is not a durable queue.
+Native `*` matches one subject token and `>` matches one or more trailing tokens.
+An explicit pattern can cover other publishers, whose payloads must match the
+handler's DTO. Matching remains native; no Python routing engine is added.
+
+Use the existing `create_app` module discovery, explicit providers,
+`publish_hooks`, `subscribe_hooks` and `papilio_tasks events run myapp.events:app`.
+Each message gets its own Dishka scope shared by its handler and subscribe hooks.
+Producer-only apps use `connect()`, `await OrderCreated.publish(Order(id=42))`,
+and `stop()` in `finally`. Direct publication and the decorator reuse the same
+sender and hooks. Publish metadata contains the registered `subject`; native
+per-call options can select a different destination. The native result is `None`,
+including when there are no subscribers, and still invokes `after_send`.
+Publication returning successfully does not confirm subscriber completion.
+
+Core retains no offline backlog and exposes no durable consumer or ACK policy
+ClassVars. Subscribe hooks can observe handler failure but do not create message
+persistence. Use [JetStream Events](#jetstream-events) for persistent streams
+and durable consumers. Request/reply remains an infra API; Events handlers use
+`run(event: T) -> None` and no auto-reply.
+
+Live checks cover both subject wildcards, disconnect without replay, native send
+results, DTO/DI/hooks, and two CLI processes combining queue-group competition
+with independent broadcast subscriptions. Shutdown closes message and application
+resources. Cluster failover and network recovery are not covered by these checks.
+
+### JetStream Events
+
+Use the same `papilio-tasks[events-nats]` extra with JetStream enabled on NATS.
+`JetPublisher[T]` declares a subject and native `JStream`; `JetSubscriber[T]`
+references that publisher. The stream belongs to the publisher declaration.
+
+```python
+from typing import ClassVar
+
+from dishka import Provider, Scope, provide
+from faststream import AckPolicy
+from faststream.nats import JStream, PullSub
+from faststream.nats import NatsBroker as NativeNatsBroker
+from nats.js.api import ConsumerConfig
+from pydantic import BaseModel
+
+from papilio_tasks.apps.events.application import create_app
+from papilio_tasks.apps.events.publishers.jetstream import JetPublisher
+from papilio_tasks.apps.events.registry.jetstream import JetRegistrar
+from papilio_tasks.apps.events.subscribers.jetstream import JetSubscriber
+from papilio_tasks.infra.faststream.brokers.backends.nats import NatsBroker
+
+
+class Order(BaseModel):
+    id: int
+
+
+class OrderCreated(JetPublisher[Order]):
+    subject: ClassVar[str] = "orders.created"
+    stream: ClassVar[JStream] = JStream("orders", subjects=["orders.*"])
+
+
+class Finance(JetSubscriber[Order]):
+    publisher = OrderCreated
+    durable: ClassVar[str | None] = "finance"
+    pull_sub: ClassVar[bool | PullSub] = PullSub(timeout=1)
+    config: ClassVar[ConsumerConfig | None] = ConsumerConfig(
+        ack_wait=30, max_deliver=3,
+    )
+    ack_policy: ClassVar[AckPolicy | None] = AckPolicy.NACK_ON_ERROR
+
+    async def run(self, event: Order) -> None:
+        print(event.id)
+
+
+class Services(Provider):
+    finance = provide(Finance, scope=Scope.REQUEST)
+
+
+registry = JetRegistrar(
+    NatsBroker(NativeNatsBroker("nats://localhost:4222"))
+)
+registry.publisher(OrderCreated)
+registry.subscriber(Finance)
+app = create_app(registrar=registry, providers=[Services()])
+```
+
+Run `papilio_tasks events run myapp.events:app`. Workers using the same stream
+and pull durable share that consumer's messages. Use a different durable for an
+independent consumer. These names are explicit; the framework invents none.
+`queue` is for native push queue groups, not pull consumers. The default remains
+native push (`pull_sub=False`); explicit pull plus durable is recommended for
+shared workers. Do not supply a push `durable` when you intend a scalable push
+queue group; use `queue` for that mode.
+
+A subscriber can override `subject` with a native pattern; `None` derives its
+publisher's subject. Explicit non-`None` registrar options override inherited
+class settings. `pull_sub=False` and `queue=""` are explicit overrides. Reset
+optional settings on a subclass with `None`. `JStream`, `PullSub` and
+`ConsumerConfig` are copied before registration, so native registration cannot
+mutate reusable class settings. Set the `durable` field explicitly rather than
+assuming `config.durable_name` supplies the native pull binding argument.
+
+For batches use `PullSub(batch=True, batch_size=100, timeout=1)` and
+`async def run(self, event: list[Order]) -> None`. Native delivery, acknowledgement,
+retention and consumer configuration apply. `faststream.AckPolicy` controls
+handler outcome handling; `ConsumerConfig.ack_policy` is the NATS protocol's
+separate setting. `NACK_ON_ERROR` allows native redelivery after a handler error;
+`MANUAL` requires explicitly acknowledging through the injected message.
+`max_deliver` bounds deliveries for that consumer. Hooks observe outcomes and
+use the same request scope as the handler; they do not implement retries.
+Handlers and side effects must tolerate redelivery.
+
+`await OrderCreated.publish(Order(id=42))` returns the native `PubAck` and shared
+publish hooks receive that same result. It confirms the server's stream publish
+acknowledgement, not successful business processing. Failures propagate unchanged
+and invoke `on_error`. Metadata contains the registered `subject` and `stream`
+name; per-call native options remain separate. The shared `@publish(...,
+select=lambda result: ...)` decorator also works and preserves the wrapped
+function's return value.
+
+`start()` can declare the configured stream; producer-only `connect()` does not.
+Provision streams before sending from a producer-only app, or start an app that
+declares them first. Use `JStream(..., declare=False)` for externally managed
+streams. A stopped consumer can later receive retained messages, subject to the
+stream's retention policy and consumer delivery policy. An ACK does not imply
+that the stream record is deleted under every retention policy.
+
+Live tests cover offline backlog, push/pull/batch decoding, native publish ACKs
+and errors, manual and automatic ACKs, bounded redelivery, shared durable workers
+and independent consumers, module discovery, DI/hooks/decorator, and CLI cleanup.
+They do not establish restart/cluster durability or exactly-once side effects.
+
 ### Events CLI
 
 Expose the result of `create_app(...)` as `app` in your entry module, then run:
@@ -1992,8 +2268,9 @@ local selections remain available.
 is the native send exception. `call.sender` is the qualified Publisher class,
 `call.args` contains the payload, and `call.kwargs` captures publication options.
 `call.meta` describes the registered Rabbit `exchange` and `routing_key`, or
-Kafka `topic`, Redis `stream`, Pub/Sub `channel`, or Redis `list`. It is not a claim about
-the final destination if per-call options override the route.
+Kafka `topic`, Redis `stream`, Pub/Sub `channel`, Redis `list` or NATS `subject`
+(plus `stream` for JetStream). It is not a claim about the final destination if
+per-call options override the route.
 Options and metadata are shallow read-only mappings, not serialized snapshots.
 After-send or scope-cleanup failure raises `PublishError(result)` without resending
 or calling send-error hooks. Send errors and cancellation retain their original
