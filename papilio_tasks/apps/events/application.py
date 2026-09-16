@@ -1,8 +1,10 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from dishka import AsyncContainer, Provider, make_async_container
 from dishka_faststream import FastStreamProvider, setup_dishka
+from faststream import FastStream
 
 from papilio_tasks.tools.bootstrap import Bootstrapper
 from papilio_tasks.tools.hooks.publish import PublishHooks
@@ -13,7 +15,7 @@ from .registry.base import Registrar
 from .subscribers.base import Subscriber
 
 
-class Application:
+class Application(FastStream):
     """Own broker and DI lifecycle; connect publishes, start also consumes."""
 
     def __init__(
@@ -22,23 +24,35 @@ class Application:
         self.registrar = registrar
         self.container = container
         self._closed = False
+        # The native broker protocol only exposes lifecycle operations.
+        super().__init__(
+            cast(Any, registrar.broker.native), lifespan=self._lifespan
+        )
+
+    @asynccontextmanager
+    async def _lifespan(self) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            # Native shutdown is skipped when startup fails; ownership isn't.
+            await self.stop()
 
     async def connect(self) -> None:
         if self._closed:
             raise RuntimeError("Application is closed")
         await self.registrar.broker.connect()
 
-    async def start(self) -> None:
+    async def start(self, **run_extra_options: Any) -> None:
         if self._closed:
             raise RuntimeError("Application is closed")
-        await self.registrar.broker.start()
+        await super().start(**run_extra_options)
 
     async def stop(self) -> None:
         if self._closed:
             return
         self._closed = True
         try:
-            await self.registrar.broker.stop()
+            await super().stop()
         finally:
             try:
                 await self.container.close()

@@ -40,6 +40,7 @@ def test_cli_forwards_native_options_and_exit_status(monkeypatch, app):
         ["projection"],
         ["projection", "worker"],
         ["projection", "beat"],
+        ["events"],
     ],
 )
 def test_help_paths(command):
@@ -72,6 +73,7 @@ assert Bootstrapper().modules('schedulers') == []
 assert main([]) == 0
 assert main(['scheduler']) == 0
 assert main(['projection']) == 0
+assert main(['events']) == 0
 try:
     main(['--help'])
 except SystemExit as error:
