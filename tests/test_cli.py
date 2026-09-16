@@ -63,7 +63,7 @@ class Block(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in blocked:
             raise AssertionError('Unselected import: ' + fullname)
 sys.meta_path.insert(0, Block())
-from papilio_tasks.core.bootstrap import Bootstrapper
+from papilio_tasks.tools.bootstrap import Bootstrapper
 from papilio_tasks.cli.main import main
 assert Bootstrapper().modules('schedulers') == []
 assert main([]) == 0

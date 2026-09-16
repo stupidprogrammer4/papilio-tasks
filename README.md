@@ -24,8 +24,8 @@ import asyncio
 
 from dishka import Provider, Scope
 
-from papilio_tasks.schedulers import Registrar, Scheduler
-from papilio_tasks.schedulers.application import create_broker
+from papilio_tasks.apps.schedulers import Registrar, Scheduler
+from papilio_tasks.apps.schedulers.application import create_broker
 
 
 class Report(Scheduler):
@@ -85,7 +85,7 @@ use a backend-specific scheduler and an optional queue specification:
 ```python
 # app/modules/reports/schedulers.py
 from typing import ClassVar
-from papilio_tasks.schedulers.backends.rabbit import (
+from papilio_tasks.apps.schedulers.backends.rabbit import (
     RabbitQueue,
     RabbitScheduler,
 )
@@ -118,10 +118,10 @@ The application collects its providers and passes them to the factory. The
 from datetime import UTC, datetime, timedelta
 from taskiq import ScheduledTask
 
-from papilio_tasks.schedulers.application import create_beat, create_broker
-from papilio_tasks.schedulers.backends.rabbit import RabbitBroker
-from papilio_tasks.schedulers.infra.sources.backends.memory import MemorySource
-from papilio_tasks.schedulers.registry.rabbit import RabbitRegistrar
+from papilio_tasks.apps.schedulers.application import create_beat, create_broker
+from papilio_tasks.apps.schedulers.backends.rabbit import RabbitBroker
+from papilio_tasks.infra.taskiq.sources.backends.memory import MemorySource
+from papilio_tasks.apps.schedulers.registry.rabbit import RabbitRegistrar
 
 from .modules.reports.providers import Jobs
 from .modules.reports.schedulers import Report
@@ -212,7 +212,7 @@ as `prefix`, `buffer_size` and `serializer` are passed directly to that source.
 The broker is independent: a RabbitMQ broker can use this Redis source too.
 
 ```python
-from papilio_tasks.schedulers.infra.sources.backends.redis import RedisSource
+from papilio_tasks.infra.taskiq.sources.backends.redis import RedisSource
 
 source = RedisSource("redis://localhost:6379/0", prefix="jobs")
 beat = create_beat(broker, sources=[source])
@@ -271,12 +271,12 @@ under `schedulers.backends.redis`. Each has its own registrar under
 `schedulers.registry`. The common Memory scheduler has no queue obligation.
 
 ```python
-from papilio_tasks.schedulers.backends.redis import (
+from papilio_tasks.apps.schedulers.backends.redis import (
     RedisQueue,
     RedisScheduler,
     RedisStreamBroker,
 )
-from papilio_tasks.schedulers.registry.redis import RedisRegistrar
+from papilio_tasks.apps.schedulers.registry.redis import RedisRegistrar
 
 
 class Report(RedisScheduler):

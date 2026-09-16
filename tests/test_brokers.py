@@ -6,8 +6,8 @@ import pytest
 from pydantic import BaseModel
 from taskiq import InMemoryBroker
 
-from papilio_tasks.schedulers.infra.brokers.backends.memory import MemoryBroker
-from papilio_tasks.schedulers.infra.brokers.base import Broker
+from papilio_tasks.infra.taskiq.brokers.backends.memory import MemoryBroker
+from papilio_tasks.infra.taskiq.brokers.base import Broker
 
 
 async def test_broker_registers_plain_callable_without_scheduler_or_dishka():
@@ -94,12 +94,12 @@ class BlockOptional(importlib.abc.MetaPathFinder):
             raise ImportError(fullname)
 
 sys.meta_path.insert(0, BlockOptional())
-from papilio_tasks.schedulers.infra.brokers.base import Broker
-from papilio_tasks.schedulers.infra.brokers.backends.memory import MemoryBroker
+from papilio_tasks.infra.taskiq.brokers.base import Broker
+from papilio_tasks.infra.taskiq.brokers.backends.memory import MemoryBroker
 MemoryBroker()
-from papilio_tasks.schedulers.infra.sources.backends.memory import MemorySource
-from papilio_tasks.schedulers.infra.sources.base import Source, MutableSource
-from papilio_tasks.schedulers.infra.sources.contracts.memory import (
+from papilio_tasks.infra.taskiq.sources.backends.memory import MemorySource
+from papilio_tasks.infra.taskiq.sources.base import Source, MutableSource
+from papilio_tasks.infra.taskiq.sources.contracts.memory import (
     MemorySourceContract,
 )
 MemorySource()

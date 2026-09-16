@@ -4,7 +4,9 @@ from typing import Any, Protocol
 from taskiq.scheduler.created_schedule import CreatedSchedule
 from taskiq.scheduler.scheduled_task import CronSpec
 
-from .infra.sources.contracts.base import MutableSourceContract
+from papilio_tasks.infra.taskiq.sources.contracts.base import (
+    MutableSourceContract,
+)
 
 
 class SchedulerContract(Protocol):

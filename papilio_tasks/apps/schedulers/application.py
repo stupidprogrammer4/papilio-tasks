@@ -7,10 +7,10 @@ from dishka import Provider, make_async_container
 from dishka.integrations.taskiq import TaskiqProvider, setup_dishka
 from taskiq import AsyncBroker, TaskiqEvents, TaskiqScheduler, TaskiqState
 
-from papilio_tasks.core.bootstrap import Bootstrapper
+from papilio_tasks.infra.taskiq.sources.contracts.base import SourceContract
+from papilio_tasks.tools.bootstrap import Bootstrapper
 
 from .base import Scheduler
-from .infra.sources.contracts.base import SourceContract
 from .registry import Registrar
 
 

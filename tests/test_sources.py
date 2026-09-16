@@ -5,12 +5,12 @@ from taskiq import InMemoryBroker, ScheduledTask
 from taskiq.exceptions import ScheduledTaskCancelledError
 from taskiq.schedule_sources import LabelScheduleSource
 
-from papilio_tasks.schedulers.infra.sources.backends.memory import MemorySource
-from papilio_tasks.schedulers.infra.sources.base import Source
-from papilio_tasks.schedulers.infra.sources.contracts.base import (
+from papilio_tasks.infra.taskiq.sources.backends.memory import MemorySource
+from papilio_tasks.infra.taskiq.sources.base import Source
+from papilio_tasks.infra.taskiq.sources.contracts.base import (
     MutableSourceContract,
 )
-from papilio_tasks.schedulers.infra.sources.contracts.memory import (
+from papilio_tasks.infra.taskiq.sources.contracts.memory import (
     MemorySourceContract,
 )
 

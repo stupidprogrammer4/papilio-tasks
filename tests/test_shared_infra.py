@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import os
 import subprocess
 import sys
@@ -8,48 +7,6 @@ from uuid import uuid4
 
 import pytest
 from taskiq.receiver import Receiver
-
-
-@pytest.mark.parametrize(
-    "module,names,dependency",
-    [
-        ("brokers.base", ("Broker",), "taskiq"),
-        ("brokers.contracts.base", ("BrokerContract",), "taskiq"),
-        (
-            "brokers.contracts.rabbit",
-            ("RabbitContract",),
-            "taskiq_aio_pika",
-        ),
-        (
-            "brokers.contracts.redis",
-            ("RedisStreamContract",),
-            "taskiq_redis",
-        ),
-        ("brokers.backends.memory", ("MemoryBroker",), "taskiq"),
-        (
-            "brokers.backends.rabbit",
-            ("RabbitBroker",),
-            "taskiq_aio_pika",
-        ),
-        (
-            "brokers.backends.redis",
-            ("RedisStreamBroker",),
-            "taskiq_redis",
-        ),
-        (
-            "queues.rabbit",
-            ("RabbitQueue", "declare_queue"),
-            "taskiq_aio_pika",
-        ),
-        ("queues.redis", ("RedisQueue",), "taskiq"),
-    ],
-)
-def test_legacy_imports_keep_object_identity(module, names, dependency):
-    pytest.importorskip(dependency)
-    old = importlib.import_module("papilio_tasks.schedulers.infra." + module)
-    shared = importlib.import_module("papilio_tasks.infra.taskiq." + module)
-    for name in names:
-        assert getattr(old, name) is getattr(shared, name)
 
 
 @pytest.mark.parametrize("kind", ["memory", "rabbit", "redis"])
@@ -66,8 +23,8 @@ import sys
 
 kind = sys.argv[1]
 blocked = {'papilio', 'dishka', 'faststream',
-           'papilio_tasks.schedulers', 'papilio_tasks.projections',
-           'papilio_tasks.events'}
+           'papilio_tasks.apps.schedulers', 'papilio_tasks.apps.projections',
+           'papilio_tasks.apps.events'}
 if kind != 'rabbit': blocked.add('taskiq_aio_pika')
 if kind != 'redis': blocked.update({'taskiq_redis', 'redis'})
 class Block(importlib.abc.MetaPathFinder):
@@ -97,6 +54,55 @@ async def execute():
         assert not result.is_err and result.return_value == 5
     finally:
         await broker.native.shutdown()
+if kind == 'memory': asyncio.run(execute())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, kind],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("kind", ["memory", "redis"])
+def test_shared_sources_work_without_apps_or_brokers(kind):
+    if kind == "redis":
+        pytest.importorskip("taskiq_redis")
+    code = """
+import asyncio
+import importlib
+import importlib.abc
+import sys
+
+kind = sys.argv[1]
+blocked = {'papilio', 'dishka', 'faststream', 'taskiq_aio_pika',
+           'papilio_tasks.apps.schedulers', 'papilio_tasks.apps.projections',
+           'papilio_tasks.apps.events', 'papilio_tasks.infra.taskiq.brokers'}
+if kind == 'memory': blocked.update({'taskiq_redis', 'redis'})
+class Block(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(fullname == p or fullname.startswith(p + '.') for p in blocked):
+            raise AssertionError('Unexpected dependency: ' + fullname)
+sys.meta_path.insert(0, Block())
+
+from taskiq import ScheduledTask
+from papilio_tasks.infra.taskiq.sources.contracts.base import (
+    MutableSourceContract,
+)
+module = importlib.import_module(
+    'papilio_tasks.infra.taskiq.sources.backends.' + kind
+)
+source = (module.MemorySource() if kind == 'memory'
+          else module.RedisSource('redis://localhost', prefix='isolated'))
+assert isinstance(source, MutableSourceContract)
+async def execute():
+    task = ScheduledTask(task_name='sync', labels={}, args=[42], kwargs={},
+                         schedule_id='one', cron='* * * * *')
+    await source.add_schedule(task)
+    assert await source.get_schedules() == [task]
+    await source.delete_schedule('one')
+    assert await source.get_schedules() == []
 if kind == 'memory': asyncio.run(execute())
 """
     result = subprocess.run(

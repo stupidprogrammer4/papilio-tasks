@@ -8,17 +8,17 @@ import pytest
 pytest.importorskip("taskiq_redis")
 from redis.asyncio import Redis  # noqa: E402
 
-from papilio_tasks.schedulers.backends.redis import (  # noqa: E402
+from papilio_tasks.apps.schedulers.backends.redis import (  # noqa: E402
     RedisScheduler,
 )
-from papilio_tasks.schedulers.infra.brokers.backends.redis import (  # noqa: E402
+from papilio_tasks.apps.schedulers.registry.redis import (  # noqa: E402
+    RedisRegistrar,
+)
+from papilio_tasks.infra.taskiq.brokers.backends.redis import (  # noqa: E402
     RedisStreamBroker,
 )
-from papilio_tasks.schedulers.infra.queues.redis import (
+from papilio_tasks.infra.taskiq.queues.redis import (
     RedisQueue,  # noqa: E402
-)
-from papilio_tasks.schedulers.registry.redis import (  # noqa: E402
-    RedisRegistrar,
 )
 
 

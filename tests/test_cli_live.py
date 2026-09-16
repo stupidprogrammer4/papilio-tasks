@@ -29,7 +29,7 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         textwrap.dedent("""
         import os
         from pathlib import Path
-        from papilio_tasks.schedulers.backends.redis import RedisScheduler
+        from papilio_tasks.apps.schedulers.backends.redis import RedisScheduler
 
         def record(value):
             with Path(os.environ['CLI_EVENTS']).open('a') as stream:
@@ -71,12 +71,12 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         import os
         from datetime import UTC, datetime, timedelta
         from taskiq import ScheduledTask, ScheduleSource, TaskiqEvents
-        from papilio_tasks.schedulers.application import (
+        from papilio_tasks.apps.schedulers.application import (
             create_broker, create_beat,
         )
-        from papilio_tasks.schedulers.registry.redis import RedisRegistrar
-        from papilio_tasks.schedulers.backends.redis import RedisStreamBroker
-        from papilio_tasks.schedulers.infra.sources.base import Source
+        from papilio_tasks.apps.schedulers.registry.redis import RedisRegistrar
+        from papilio_tasks.apps.schedulers.backends.redis import RedisStreamBroker
+        from papilio_tasks.infra.taskiq.sources.base import Source
         from .modules.reports.providers import Jobs
         from .modules.reports.schedulers import Report, record
 
@@ -104,7 +104,7 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
             async def post_send(self, task): self.items = []
 
         if os.environ['CLI_SOURCE'] == 'redis':
-            from papilio_tasks.schedulers.infra.sources.backends.redis import (
+            from papilio_tasks.infra.taskiq.sources.backends.redis import (
                 RedisSource,
             )
             source = RedisSource(

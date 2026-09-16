@@ -4,9 +4,9 @@ import textwrap
 import pytest
 from dishka import Provider, Scope
 
-from papilio_tasks.core.bootstrap import Bootstrapper
-from papilio_tasks.schedulers import Scheduler
-from papilio_tasks.schedulers.application import create_broker
+from papilio_tasks.apps.schedulers import Scheduler
+from papilio_tasks.apps.schedulers.application import create_broker
+from papilio_tasks.tools.bootstrap import Bootstrapper
 
 
 def write(root, path, content=""):
@@ -31,7 +31,7 @@ def test_discovery_modules_packages_imported_bases_and_duplicates(
         tmp_path,
         "discovery_app/shared.py",
         """
-        from papilio_tasks.schedulers import Scheduler
+        from papilio_tasks.apps.schedulers import Scheduler
         class Imported(Scheduler):
             def __init__(self):
                 raise AssertionError('must never be constructed')
@@ -52,7 +52,7 @@ def test_discovery_modules_packages_imported_bases_and_duplicates(
         tmp_path,
         "discovery_app/two/schedulers/report.py",
         """
-        from papilio_tasks.schedulers import Scheduler
+        from papilio_tasks.apps.schedulers import Scheduler
         class Abstract(Scheduler): pass
         class Other(Scheduler):
             async def run(self): return 2
@@ -82,7 +82,7 @@ async def test_booted_scheduler_uses_supplied_module_provider(
         tmp_path,
         "provided_app/schedulers.py",
         """
-        from papilio_tasks.schedulers import Scheduler
+        from papilio_tasks.apps.schedulers import Scheduler
         class Service:
             def value(self): return 7
         class Report(Scheduler):

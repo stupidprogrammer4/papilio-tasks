@@ -7,8 +7,11 @@ from taskiq.decor import AsyncTaskiqDecoratedTask
 from taskiq.scheduler.created_schedule import CreatedSchedule
 from taskiq.scheduler.scheduled_task import CronSpec
 
+from papilio_tasks.infra.taskiq.sources.contracts.base import (
+    MutableSourceContract,
+)
+
 from .contracts import SchedulerContract
-from .infra.sources.contracts.base import MutableSourceContract
 
 
 class Scheduler(SchedulerContract, ABC):

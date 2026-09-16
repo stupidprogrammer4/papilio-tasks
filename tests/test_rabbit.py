@@ -8,15 +8,15 @@ import pytest
 pytest.importorskip("taskiq_aio_pika")
 from taskiq_aio_pika import Exchange, Queue, QueueType  # noqa: E402
 
-from papilio_tasks.schedulers import Registrar, Scheduler  # noqa: E402
-from papilio_tasks.schedulers.backends.rabbit import (  # noqa: E402
+from papilio_tasks.apps.schedulers import Registrar, Scheduler  # noqa: E402
+from papilio_tasks.apps.schedulers.backends.rabbit import (  # noqa: E402
     RabbitScheduler,
 )
-from papilio_tasks.schedulers.infra.brokers.backends.rabbit import (  # noqa: E402
-    RabbitBroker,
-)
-from papilio_tasks.schedulers.registry.rabbit import (  # noqa: E402
+from papilio_tasks.apps.schedulers.registry.rabbit import (  # noqa: E402
     RabbitRegistrar,
+)
+from papilio_tasks.infra.taskiq.brokers.backends.rabbit import (  # noqa: E402
+    RabbitBroker,
 )
 
 

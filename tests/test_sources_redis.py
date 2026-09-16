@@ -10,11 +10,11 @@ pytest.importorskip("taskiq_redis")
 from redis.asyncio import Redis  # noqa: E402
 from taskiq_redis import ListRedisScheduleSource  # noqa: E402
 
-from papilio_tasks.schedulers import Registrar, Scheduler  # noqa: E402
-from papilio_tasks.schedulers.infra.sources.backends.redis import (  # noqa: E402
+from papilio_tasks.apps.schedulers import Registrar, Scheduler  # noqa: E402
+from papilio_tasks.infra.taskiq.sources.backends.redis import (  # noqa: E402
     RedisSource,
 )
-from papilio_tasks.schedulers.infra.sources.contracts.base import (  # noqa: E402
+from papilio_tasks.infra.taskiq.sources.contracts.base import (  # noqa: E402
     MutableSourceContract,
 )
 
@@ -35,9 +35,9 @@ class Block(importlib.abc.MetaPathFinder):
             raise ImportError(fullname)
 
 sys.meta_path.insert(0, Block())
-from papilio_tasks.schedulers.infra.sources.backends.redis import RedisSource
+from papilio_tasks.infra.taskiq.sources.backends.redis import RedisSource
 source = RedisSource('redis://localhost', prefix='jobs', buffer_size=10)
-broker_module = 'papilio_tasks.schedulers.infra.brokers.backends.redis'
+broker_module = 'papilio_tasks.infra.taskiq.brokers.backends.redis'
 assert broker_module not in sys.modules
 assert not hasattr(source, 'get_schedule')
 assert not hasattr(source, 'replace_schedule')

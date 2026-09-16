@@ -11,10 +11,13 @@ from pydantic import BaseModel
 from taskiq.scheduler.created_schedule import CreatedSchedule
 from taskiq.scheduler.scheduled_task import CronSpec
 
-from papilio_tasks.schedulers import Registrar, Scheduler
-from papilio_tasks.schedulers.application import create_beat, create_broker
-from papilio_tasks.schedulers.infra.brokers.backends.memory import MemoryBroker
-from papilio_tasks.schedulers.infra.sources.backends.memory import MemorySource
+from papilio_tasks.apps.schedulers import Registrar, Scheduler
+from papilio_tasks.apps.schedulers.application import (
+    create_beat,
+    create_broker,
+)
+from papilio_tasks.infra.taskiq.brokers.backends.memory import MemoryBroker
+from papilio_tasks.infra.taskiq.sources.backends.memory import MemorySource
 
 
 class Payload(BaseModel):
@@ -399,11 +402,11 @@ class Block(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in blocked:
             raise ImportError(fullname)
 sys.meta_path.insert(0, Block())
-from papilio_tasks.schedulers.application import create_broker
+from papilio_tasks.apps.schedulers.application import create_broker
 create_broker()
 if kind != 'memory':
-    __import__('papilio_tasks.schedulers.backends.' + kind)
-    __import__('papilio_tasks.schedulers.registry.' + kind)
+    __import__('papilio_tasks.apps.schedulers.backends.' + kind)
+    __import__('papilio_tasks.apps.schedulers.registry.' + kind)
 """
     subprocess.run(
         [sys.executable, "-c", code, integration],
