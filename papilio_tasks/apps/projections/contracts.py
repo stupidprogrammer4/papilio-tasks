@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from papilio_tasks.tools.hooks.publish import PublishHooks
 from papilio_tasks.tools.retry import Retry
 
 if TYPE_CHECKING:
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
 
 class ProjectionContract[T, D, R](Protocol):
     retry: ClassVar[Retry | None]
+    publish_hooks: ClassVar[type[PublishHooks] | None]
 
     async def read(self, *args: Any, **kwargs: Any) -> T: ...
 

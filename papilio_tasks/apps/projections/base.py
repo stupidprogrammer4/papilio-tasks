@@ -16,6 +16,7 @@ from papilio_tasks.tools.hooks.projection import (
     Stage,
     Written,
 )
+from papilio_tasks.tools.hooks.publish import PublishHooks
 from papilio_tasks.tools.retry import Retry
 
 from .contracts import ProjectionContract
@@ -33,6 +34,7 @@ class Projection[T, D, R](ProjectionContract[T, D, R], ABC):
     """
 
     retry: ClassVar[Retry | None] = None
+    publish_hooks: ClassVar[type[PublishHooks] | None] = None
 
     def __init__(self, *, hooks: Hooks[T, D, R] | None = None) -> None:
         self.hooks: Hooks[T, D, R] = hooks if hooks is not None else Hooks()
@@ -55,7 +57,9 @@ class Projection[T, D, R](ProjectionContract[T, D, R], ABC):
     @classmethod
     async def enqueue(cls, *args: Any, **kwargs: Any) -> AsyncTaskiqTask[R]:
         """Send read arguments without constructing a Projection instance."""
-        return await cls.task().kiq(*args, **kwargs)
+        from .publish import enqueue
+
+        return await enqueue(cls, args, kwargs)
 
     @classmethod
     def project[**P, S](

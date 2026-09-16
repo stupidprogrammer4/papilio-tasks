@@ -379,7 +379,7 @@ def test_projection_type_contracts(tmp_path):
         if "# error" in line
     }
     diagnostics = report["generalDiagnostics"]
-    assert report["summary"]["filesAnalyzed"] == 8, report
+    assert report["summary"]["filesAnalyzed"] == 9, report
     assert report["summary"]["errorCount"] == len(expected), report
     assert report["summary"]["warningCount"] == 0, report
     assert all(Path(d["file"]) == fixture for d in diagnostics), report
@@ -404,6 +404,9 @@ from papilio_tasks.apps.projections import Direct
 class Product(Direct[int, int]):
     async def read(self, id: int): return id
     async def write(self, data): return data
+@Product.project(select=lambda result: {'id': result})
+async def save(): return 42
+assert save.__name__ == 'save'
 assert asyncio.run(Product().run(42)) == 42
 """
     result = subprocess.run(

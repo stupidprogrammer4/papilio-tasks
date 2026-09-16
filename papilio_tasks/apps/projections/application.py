@@ -13,6 +13,7 @@ from papilio_tasks.infra.taskiq.sources.contracts.base import (
     SourceContract,
 )
 from papilio_tasks.tools.bootstrap import Bootstrapper
+from papilio_tasks.tools.hooks.publish import PublishHooks
 
 from .base import Projection
 from .registry import Registrar
@@ -24,6 +25,7 @@ def create_broker(
     providers: Sequence[Provider] = (),
     modules: Sequence[str] = (),
     retry_source: MutableSourceContract | None = None,
+    publish_hooks: type[PublishHooks] | None = None,
 ) -> AsyncBroker:
     """Discover projections and attach one container to the native broker.
 
@@ -38,6 +40,13 @@ def create_broker(
         raise ValueError("Broker already has a Papilio application")
 
     try:
+        if publish_hooks is not None and (
+            not isinstance(publish_hooks, type)
+            or not issubclass(publish_hooks, PublishHooks)
+        ):
+            raise TypeError(
+                "publish_hooks must be a PublishHooks class or None"
+            )
         classes = Bootstrapper(modules).classes("projections", Projection)
         validate_retry(broker, retry_source, (cls.retry for cls in classes))
         for cls in classes:
@@ -45,6 +54,7 @@ def create_broker(
         container = make_async_container(TaskiqProvider(), *providers)
         setup_dishka(container, broker)
         broker.state.papilio_container = container
+        broker.state.papilio_publish_hooks = publish_hooks
 
         @broker.on_event(
             TaskiqEvents.CLIENT_SHUTDOWN, TaskiqEvents.WORKER_SHUTDOWN

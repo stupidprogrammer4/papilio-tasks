@@ -12,6 +12,7 @@ from taskiq.receiver import Receiver
 from papilio_tasks.apps.projections import Direct, Hooks, Projection
 from papilio_tasks.apps.projections.application import create_broker
 from papilio_tasks.apps.projections.registry import Registrar
+from papilio_tasks.tools.hooks.publish import PublishHooks
 
 
 class Payload(BaseModel):
@@ -71,6 +72,16 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
         )
     assert producer.native is not consumer.native
     opened, closed, calls, writes, errors = [], [], [], [], []
+    published, publish_closed = [], []
+
+    async def publication_hooks():
+        async def sent(event):
+            published.append(event)
+
+        try:
+            yield PublishHooks(after_send=(handler(sent),))
+        finally:
+            publish_closed.append(True)
 
     class Session:
         def __init__(self, marker):
@@ -184,7 +195,16 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
     provider.provide(Product)
     provider.provide(Products)
     provider.provide(AppHooks)
-    assert create_broker(registrar=publisher) is producer.native
+    producer_provider = Provider(scope=Scope.REQUEST)
+    producer_provider.provide(publication_hooks, provides=PublishHooks)
+    assert (
+        create_broker(
+            registrar=publisher,
+            providers=[producer_provider],
+            publish_hooks=PublishHooks,
+        )
+        is producer.native
+    )
     assert (
         create_broker(registrar=registry, providers=[provider])
         is consumer.native
@@ -199,6 +219,11 @@ async def test_projection_live_transport_hooks_results_and_ack(kind, failure):
             await batch.enqueue([5, 6]),
             await single.enqueue(Payload(value=13), factor=3),
         ]
+        assert [event.task_id for event in published] == [
+            handle.task_id for handle in handles
+        ]
+        assert publish_closed == [True] * 3
+        assert opened == []  # Publishing resolved no worker services.
         receiver = Receiver(consumer.native)
         wire = []
         async with aclosing(consumer.native.listen()) as messages:
