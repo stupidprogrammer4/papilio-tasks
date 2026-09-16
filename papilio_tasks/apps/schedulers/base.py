@@ -7,9 +7,11 @@ from taskiq.decor import AsyncTaskiqDecoratedTask
 from taskiq.scheduler.created_schedule import CreatedSchedule
 from taskiq.scheduler.scheduled_task import CronSpec
 
+from papilio_tasks.infra.taskiq import bindings
 from papilio_tasks.infra.taskiq.sources.contracts.base import (
     MutableSourceContract,
 )
+from papilio_tasks.tools.retry import Retry
 
 from .contracts import SchedulerContract
 
@@ -18,17 +20,14 @@ class Scheduler(SchedulerContract, ABC):
     """An async job with application-owned instances and dependencies."""
 
     _backend: ClassVar[str] = "memory"
-    _task: ClassVar[AsyncTaskiqDecoratedTask | None] = None
+    retry: ClassVar[Retry | None] = None
 
     @abstractmethod
     async def run(self, *args: Any, **kwargs: Any) -> Any: ...
 
     @classmethod
     def task(cls) -> AsyncTaskiqDecoratedTask:
-        task = cls.__dict__.get("_task")
-        if task is None:
-            raise RuntimeError(f"Scheduler is not included: {cls.__name__}")
-        return task
+        return bindings.get(cls)
 
     @classmethod
     async def enqueue(cls, *args: Any, **kwargs: Any) -> AsyncTaskiqTask:

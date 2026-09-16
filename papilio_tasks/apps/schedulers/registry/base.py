@@ -5,8 +5,10 @@ from typing import Any, get_type_hints
 
 from taskiq.decor import AsyncTaskiqDecoratedTask
 
+from papilio_tasks.infra.taskiq import bindings
 from papilio_tasks.infra.taskiq.brokers.backends.memory import MemoryBroker
 from papilio_tasks.infra.taskiq.brokers.contracts.base import BrokerContract
+from papilio_tasks.infra.taskiq.retry import retry_labels
 
 from ..base import Scheduler
 
@@ -30,8 +32,9 @@ class Registrar[S: Scheduler]:
         labels: dict[str, Any] | None = None,
     ) -> AsyncTaskiqDecoratedTask:
         execute, name = self._prepare(cls, name)
+        labels = retry_labels(self.broker.native, cls.retry, labels)
         task = self.broker.register(execute, name=name, labels=labels)
-        cls._task = task
+        bindings.add(cls, task)
         return task
 
     def _prepare(
@@ -46,8 +49,7 @@ class Registrar[S: Scheduler]:
             raise TypeError(f"Expected a {self._backend} scheduler")
         if isabstract(cls) or not iscoroutinefunction(cls.run):
             raise TypeError("Scheduler must implement async run")
-        if cls.__dict__.get("_task") is not None:
-            raise ValueError(f"Scheduler already included: {cls.__name__}")
+        bindings.check(cls)
         if name is None:
             name = f"{cls.__module__}.{cls.__qualname__}"
         if not name:

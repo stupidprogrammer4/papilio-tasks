@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize("source_kind", ["memory", "redis"])
+@pytest.mark.parametrize("source_kind", ["memory", "redis", "retry"])
 def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
     pytest.importorskip("taskiq_redis")
     package = tmp_path / "cli_app"
@@ -29,6 +29,7 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         textwrap.dedent("""
         import os
         from pathlib import Path
+        from papilio_tasks.tools.retry import Retry
         from papilio_tasks.apps.schedulers.backends.redis import RedisScheduler
 
         def record(value):
@@ -38,9 +39,17 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         class Root: pass
         class Service: pass
         class Report(RedisScheduler):
+            retry = (Retry(attempts=2, delay=2, errors=(ConnectionError,))
+                     if os.environ['CLI_SOURCE'] == 'retry' else None)
+            attempts = 0
             def __init__(self, service: Service, root: Root):
                 self.service = service
             async def run(self, value: int):
+                if self.retry is not None:
+                    type(self).attempts += 1
+                    if self.attempts == 1:
+                        record('failed:' + str(value))
+                        raise ConnectionError('temporary')
                 record('executed:' + str(value))
     """)
     )
@@ -75,7 +84,9 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
             create_broker, create_beat,
         )
         from papilio_tasks.apps.schedulers.registry.redis import RedisRegistrar
-        from papilio_tasks.apps.schedulers.backends.redis import RedisStreamBroker
+        from papilio_tasks.apps.schedulers.backends.redis import (
+            RedisStreamBroker,
+        )
         from papilio_tasks.infra.taskiq.sources.base import Source
         from .modules.reports.providers import Jobs
         from .modules.reports.schedulers import Report, record
@@ -84,9 +95,17 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
             os.environ['TEST_REDIS_URL'], queue_name=os.environ['CLI_QUEUE'],
             consumer_group_name=os.environ['CLI_QUEUE'], consumer_id='0',
         ))
+        retry_source = None
+        if os.environ['CLI_SOURCE'] == 'retry':
+            from papilio_tasks.infra.taskiq.sources.backends.redis import (
+                RedisSource,
+            )
+            retry_source = RedisSource(
+                os.environ['TEST_REDIS_URL'], prefix=os.environ['CLI_PREFIX'],
+            )
         broker = create_broker(
             registrar=registrar, providers=[Jobs()],
-            modules=['cli_app.modules'],
+            modules=['cli_app.modules'], retry_source=retry_source,
         )
         @broker.on_event(TaskiqEvents.WORKER_STARTUP)
         async def ready(state): record('worker_ready')
@@ -103,11 +122,11 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
             async def get_schedules(self): return self.items
             async def post_send(self, task): self.items = []
 
-        if os.environ['CLI_SOURCE'] == 'redis':
+        if os.environ['CLI_SOURCE'] in ('redis', 'retry'):
             from papilio_tasks.infra.taskiq.sources.backends.redis import (
                 RedisSource,
             )
-            source = RedisSource(
+            source = retry_source if retry_source is not None else RedisSource(
                 os.environ['TEST_REDIS_URL'], prefix=os.environ['CLI_PREFIX'],
             )
             # Add work after observing beat's first empty native read.
@@ -183,7 +202,7 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         )
         wait_for("worker_ready")
         start("beat", "cli_app.tasks:beat", "--update-interval", "1")
-        if source_kind == "redis":
+        if source_kind in ("redis", "retry"):
             wait_for("source_read:0")
             subprocess.run(
                 [
@@ -240,7 +259,12 @@ asyncio.run(publish())
                 redis.delete(*keys)
     entries = events.read_text().splitlines()
     assert entries.count("executed:17") == 1, output()
-    assert entries.count("request_closed") == 1
+    assert entries.count("request_closed") == (
+        2 if source_kind == "retry" else 1
+    )
+    if source_kind == "retry":
+        assert entries.count("failed:17") == 1
+        assert entries.index("failed:17") < entries.index("executed:17")
     assert entries.count("root_closed") == 1
     if source_kind == "memory":
         assert (

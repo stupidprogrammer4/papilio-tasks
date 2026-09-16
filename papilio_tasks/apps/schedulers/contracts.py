@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from taskiq.scheduler.created_schedule import CreatedSchedule
 from taskiq.scheduler.scheduled_task import CronSpec
@@ -7,9 +7,12 @@ from taskiq.scheduler.scheduled_task import CronSpec
 from papilio_tasks.infra.taskiq.sources.contracts.base import (
     MutableSourceContract,
 )
+from papilio_tasks.tools.retry import Retry
 
 
 class SchedulerContract(Protocol):
+    retry: ClassVar[Retry | None]
+
     async def run(self, *args: Any, **kwargs: Any) -> Any: ...
 
     @classmethod

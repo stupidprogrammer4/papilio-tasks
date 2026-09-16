@@ -221,7 +221,7 @@ def test_inclusion_errors_and_subclass_isolation():
     with pytest.raises(TypeError, match="implement async"):
         registrar.include(Scheduler)
     registrar.include(Report, name="report")
-    with pytest.raises(ValueError, match="already included"):
+    with pytest.raises(ValueError, match="already registered"):
         Registrar().include(Report)
 
     class Child(Report):
