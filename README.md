@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.webp" alt="Papilio Tasks logo" width="320">
+</p>
+
 # Papilio Tasks
 
 Modular background jobs for Python 3.13+. The scheduler application uses Taskiq
