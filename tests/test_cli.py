@@ -6,7 +6,8 @@ import pytest
 from papilio_tasks.cli.main import main
 
 
-def test_cli_forwards_native_options_and_exit_status(monkeypatch):
+@pytest.mark.parametrize("app", ["scheduler", "projection"])
+def test_cli_forwards_native_options_and_exit_status(monkeypatch, app):
     from taskiq.cli.scheduler.cmd import SchedulerCMD
     from taskiq.cli.worker.cmd import WorkerCMD
 
@@ -21,14 +22,8 @@ def test_cli_forwards_native_options_and_exit_status(monkeypatch):
 
     monkeypatch.setattr(WorkerCMD, "exec", worker)
     monkeypatch.setattr(SchedulerCMD, "exec", beat)
-    assert (
-        main(["scheduler", "worker", "app.tasks:broker", "--workers", "3"])
-        == 7
-    )
-    assert (
-        main(["scheduler", "beat", "app.tasks:beat", "--skip-first-run"])
-        is None
-    )
+    assert main([app, "worker", "app.tasks:broker", "--workers", "3"]) == 7
+    assert main([app, "beat", "app.tasks:beat", "--skip-first-run"]) is None
     assert calls == [
         ("worker", ["app.tasks:broker", "--workers", "3"]),
         ("beat", ["app.tasks:beat", "--skip-first-run"]),
@@ -37,7 +32,15 @@ def test_cli_forwards_native_options_and_exit_status(monkeypatch):
 
 @pytest.mark.parametrize(
     "command",
-    [[], ["scheduler"], ["scheduler", "worker"], ["scheduler", "beat"]],
+    [
+        [],
+        ["scheduler"],
+        ["scheduler", "worker"],
+        ["scheduler", "beat"],
+        ["projection"],
+        ["projection", "worker"],
+        ["projection", "beat"],
+    ],
 )
 def test_help_paths(command):
     result = subprocess.run(
@@ -67,6 +70,8 @@ from papilio_tasks.tools.bootstrap import Bootstrapper
 from papilio_tasks.cli.main import main
 assert Bootstrapper().modules('schedulers') == []
 assert main([]) == 0
+assert main(['scheduler']) == 0
+assert main(['projection']) == 0
 try:
     main(['--help'])
 except SystemExit as error:
@@ -78,24 +83,26 @@ except SystemExit as error:
     assert result.returncode == 0, result.stderr
 
 
-def test_missing_dependency_has_install_hint(monkeypatch, capsys):
+@pytest.mark.parametrize("app", ["scheduler", "projection"])
+def test_missing_dependency_has_install_hint(monkeypatch, capsys, app):
     monkeypatch.setattr(
-        "papilio_tasks.cli.main.importlib.util.find_spec", lambda _: None
+        "papilio_tasks.cli.taskiq.importlib.util.find_spec", lambda _: None
     )
     with pytest.raises(SystemExit) as error:
-        main(["scheduler", "worker", "app:broker"])
+        main([app, "worker", "app:broker"])
     assert error.value.code == 2
-    assert "papilio-tasks[scheduler]" in capsys.readouterr().err
+    assert f"papilio-tasks[{app}]" in capsys.readouterr().err
 
 
-def test_native_application_import_error_is_not_masked(tmp_path):
+@pytest.mark.parametrize("app", ["scheduler", "projection"])
+def test_native_application_import_error_is_not_masked(tmp_path, app):
     (tmp_path / "broken_entry.py").write_text("import missing_app_service\n")
     result = subprocess.run(
         [
             sys.executable,
             "-m",
             "papilio_tasks",
-            "scheduler",
+            app,
             "beat",
             "broken_entry:beat",
             "--app-dir",
@@ -108,3 +115,22 @@ def test_native_application_import_error_is_not_masked(tmp_path):
     assert result.returncode != 0
     assert "missing_app_service" in result.stderr
     assert "install" not in result.stderr
+
+
+def test_projection_help_explains_optional_beat(capsys):
+    assert main(["projection"]) == 0
+    help = capsys.readouterr().out
+    assert "Beat is optional" in help
+    assert "retry_source" in help and "delay=0" in help
+
+
+def test_projection_command_does_not_import_scheduler_app(monkeypatch):
+    from taskiq.cli.worker.cmd import WorkerCMD
+
+    monkeypatch.setattr(WorkerCMD, "exec", lambda self, args: 0)
+    before = set(sys.modules)
+    assert main(["projection", "worker", "app:broker"]) == 0
+    assert not any(
+        name.startswith("papilio_tasks.apps.schedulers")
+        for name in set(sys.modules) - before
+    )
