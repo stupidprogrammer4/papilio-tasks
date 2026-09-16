@@ -1247,6 +1247,43 @@ subscribers within the message scope and closes request resources on success or
 failure. For message metadata in a provider, use the integration's `StreamMessage`
 context; concrete `RabbitMessage` injection requires an explicit context provider.
 
+Set a Rabbit subscriber's acknowledgement policy on the class to apply it during
+module discovery as well as manual registration:
+
+```python
+from faststream import AckPolicy
+
+
+class Finance(RabbitSubscriber[OrderData]):
+    publisher = OrderCreated
+    queue = RabbitQueue("finance.orders")
+    ack_policy = AckPolicy.NACK_ON_ERROR
+
+    async def run(self, event: OrderData) -> None:
+        ...
+```
+
+`ack_policy` is an inherited `ClassVar[AckPolicy | None]`, defaulting to `None`.
+Selection order is an explicit non-`None` registration argument, then the class
+setting, then the native broker default. For example:
+
+```python
+registry.subscriber(Finance, ack_policy=AckPolicy.REJECT_ON_ERROR)
+```
+
+Manual registration before `create_app` is preserved by discovery. Passing
+`ack_policy=None` at registration uses the class setting; it does not reset it.
+A subclass can set its class policy to `None` to inherit the broker default
+instead. Without any selection, Rabbit's native default is `REJECT_ON_ERROR`.
+Policies must be FastStream `AckPolicy` values, not strings.
+
+`NACK_ON_ERROR` allows redelivery of the whole handler, including when `run`
+succeeds but an `after_run` hook raises. The hook's independent
+`Handler(..., failure="continue")` setting can log that hook failure and continue.
+Rejecting without requeue sends the message to a configured dead-letter exchange;
+without one, it is discarded. Acknowledgement policy does not add a retry delay,
+backoff or attempt budget.
+
 `publish` returns the native publication result, not subscriber results. It does
 not guarantee business processing or turn database commits and sends into a
 transaction. Native errors propagate; this layer adds no retry policy. Optional
