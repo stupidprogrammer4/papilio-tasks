@@ -25,6 +25,7 @@ projection-redis = ["papilio-tasks[projection]", "taskiq-redis>=1.2.3,<1.3"]
 events = ["faststream[cli]>=0.7.5,<0.8", "dishka-faststream>=0.7,<0.8"]
 events-rabbit = ["papilio-tasks[events]", "faststream[rabbit]>=0.7.5,<0.8"]
 events-kafka = ["papilio-tasks[events]", "faststream[kafka]>=0.7.5,<0.8"]
+events-redis = ["papilio-tasks[events]", "faststream[redis]>=0.7.5,<0.8"]
 dev = ["pytest>=9,<10", "pytest-asyncio>=1.3,<2", "ruff", "pyright==1.1.390"]
 
 [tool.hatch.build.targets.wheel]
