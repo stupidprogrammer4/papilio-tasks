@@ -206,7 +206,8 @@ def test_readonly_source_duplicate_retry_and_late_registration():
 
 
 @pytest.mark.parametrize("role", ["worker", "producer", "beat"])
-async def test_source_lifecycle_has_one_owner(role):
+@pytest.mark.parametrize("app", ["scheduler", "projection"])
+async def test_source_lifecycle_has_one_owner(role, app):
     events = []
 
     class Native(ScheduleSource):
@@ -229,8 +230,13 @@ async def test_source_lifecycle_has_one_owner(role):
     # Exercise native event dispatch without making a network connection.
     from taskiq import AsyncBroker
 
-    registry = Registrar()
-    broker = create_broker(registrar=registry, retry_source=source)
+    if app == "projection":
+        from papilio_tasks.apps.projections.application import (
+            create_broker as factory,
+        )
+    else:
+        factory = create_broker
+    broker = factory(retry_source=source)
     broker.is_worker_process = role == "worker"
     broker.is_scheduler_process = role == "beat"
     assert events == []
@@ -330,7 +336,8 @@ async def test_native_retry_preserves_inputs_and_exact_attempts(
 
 
 @pytest.mark.parametrize("kind", ["rabbit", "redis"])
-async def test_retry_through_real_broker_and_redis_source(kind):
+@pytest.mark.parametrize("app", ["scheduler", "projection"])
+async def test_retry_through_real_broker_and_redis_source(kind, app):
     url = os.getenv(
         "TEST_RABBIT_URL" if kind == "rabbit" else "TEST_REDIS_URL"
     )
@@ -353,10 +360,39 @@ async def test_retry_through_real_broker_and_redis_source(kind):
             if len(calls) < 3:
                 raise ConnectionError("temporary")
 
-    registry.include(Report, name="report")
+    factory = create_broker
+    labels = None
+    if app == "projection":
+        from papilio_tasks.apps.projections import Direct
+        from papilio_tasks.apps.projections.application import (
+            create_broker as factory,
+        )
+        from papilio_tasks.apps.projections.registry import (
+            Registrar as Projections,
+        )
+
+        class Project(Direct[list[int], None]):
+            retry = Report.retry
+
+            def __init__(self):
+                super().__init__()
+
+            async def read(self, ids: list[int]) -> list[int]:
+                return ids
+
+            async def write(self, data: list[int]) -> None:
+                calls.append(data)
+                if len(calls) < 3:
+                    raise ConnectionError("temporary")
+
+        Report = Project
+        registry = Projections(registry.broker)
+        labels = {"queue_name": name}
+
+    registry.include(Report, name="report", labels=labels)
     source = RedisSource(redis_url, prefix=name)
     reader = RedisSource(redis_url, prefix=name)
-    broker = create_broker(
+    broker = factory(
         registrar=registry,
         providers=[provider_for(Report)],
         retry_source=source,

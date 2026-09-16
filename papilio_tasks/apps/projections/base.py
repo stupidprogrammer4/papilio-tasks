@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from functools import wraps
 from inspect import iscoroutinefunction
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from papilio_tasks.tools.hooks import emit
 from papilio_tasks.tools.hooks.projection import (
@@ -16,6 +16,7 @@ from papilio_tasks.tools.hooks.projection import (
     Stage,
     Written,
 )
+from papilio_tasks.tools.retry import Retry
 
 from .contracts import ProjectionContract
 
@@ -30,6 +31,8 @@ class Projection[T, D, R](ProjectionContract[T, D, R], ABC):
     Write owns commit/partial-failure semantics. Hooks observe data by
     reference; the pipeline does not copy data, retry or roll back writes.
     """
+
+    retry: ClassVar[Retry | None] = None
 
     def __init__(self, *, hooks: Hooks[T, D, R] | None = None) -> None:
         self.hooks: Hooks[T, D, R] = hooks if hooks is not None else Hooks()

@@ -9,6 +9,7 @@ from taskiq.decor import AsyncTaskiqDecoratedTask
 from papilio_tasks.infra.taskiq import bindings
 from papilio_tasks.infra.taskiq.brokers.backends.memory import MemoryBroker
 from papilio_tasks.infra.taskiq.brokers.contracts.base import BrokerContract
+from papilio_tasks.infra.taskiq.retry import retry_labels
 from papilio_tasks.tools.hooks.projection import Hooks
 
 from ..base import Projection
@@ -45,6 +46,7 @@ class Registrar:
         ):
             raise TypeError("Projection must implement async operations")
         bindings.check(cls)
+        labels = retry_labels(self.broker.native, cls.retry, labels)
 
         read = cls.read
         hints = get_type_hints(read)
