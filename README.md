@@ -17,7 +17,8 @@
 
 Modular background jobs for Python 3.13+. Schedulers and projections use Taskiq
 and ordinary Dishka providers. Projections run read/transform/write pipelines
-locally or through workers. The events application remains unimplemented.
+locally or through workers. Events provide typed RabbitMQ publishers and
+subscribers using FastStream and Dishka.
 
 ## Installation
 
@@ -28,6 +29,7 @@ pip install 'papilio-tasks[scheduler-redis]'   # Redis Streams
 pip install 'papilio-tasks[projection]'        # in-process Memory default
 pip install 'papilio-tasks[projection-rabbit]' # RabbitMQ
 pip install 'papilio-tasks[projection-redis]'  # Redis Streams / retry source
+pip install 'papilio-tasks[events-rabbit]'     # FastStream RabbitMQ events
 ```
 
 A bare `papilio-tasks` installation provides the lightweight CLI and discovery
@@ -36,6 +38,82 @@ select dependencies; the distribution includes all source files. Scheduler and
 Projection extras are independent and do not install FastStream. For RabbitMQ
 transport with a Redis retry source, install both `projection-rabbit` and
 `projection-redis`. Each application owns its dependencies.
+
+## FastStream infrastructure
+
+`events-rabbit` installs FastStream's Rabbit and CLI extras and the Dishka
+integration, independently of Taskiq. The infrastructure adapter does not import Dishka
+or the Events app. The optional app layer is described below.
+
+The adapter takes one already-configured native broker. It does not construct a
+connection or client per operation. Its base implements `connect`, `start`, `stop`
+and `native`; `RabbitContract` adds native `subscriber`, `publisher`, `publish`,
+`declare_queue` and `declare_exchange` operations. Queue/exchange settings use
+FastStream's own types. Additional keyword options go to the native method;
+advanced options retain native runtime validation through `**options`.
+
+```python
+import asyncio
+
+from faststream.rabbit import RabbitBroker as NativeRabbitBroker
+
+from papilio_tasks.infra.faststream.brokers.backends.rabbit import (
+    ExchangeType, RabbitBroker, RabbitExchange, RabbitQueue,
+)
+
+broker = RabbitBroker(NativeRabbitBroker("amqp://guest:guest@localhost/"))
+shutdown = asyncio.Event()
+exchange = RabbitExchange("orders", type=ExchangeType.TOPIC, durable=True)
+
+@broker.subscriber(
+    RabbitQueue("finance", routing_key="order.created", durable=True),
+    exchange,
+)
+async def finance(event: dict) -> None:
+    print("finance", event)
+
+@broker.subscriber(
+    RabbitQueue("notifications", routing_key="order.created", durable=True),
+    exchange,
+)
+async def notify(event: dict) -> None:
+    print("notify", event)
+
+publisher = broker.publisher(
+    exchange=exchange, routing_key="order.created", persist=True,
+)
+
+async def serve() -> None:
+    try:
+        await broker.start()
+        await publisher.publish({"order_id": 42})
+        # Keep running until your application's shutdown signal.
+        await shutdown.wait()  # An asyncio.Event owned by your application.
+    finally:
+        await broker.stop()
+```
+
+Registration only configures native objects. `connect()` opens a connection for
+publication without starting subscribers; `start()` also starts consumption and
+declares/binds configured subscriptions. A producer-only process should connect,
+publish and stop; consumer queues/bindings must already exist for routing.
+For explicit topology creation, call `declare_queue(RabbitQueue(...))` and
+`declare_exchange(RabbitExchange(...))` after connecting. They return real native
+server objects. Queue declaration alone does not bind it to an exchange; configure
+a subscriber or bind the returned queue explicitly through its native API.
+
+Distinct subscription queues each receive matching events; consumers of the same
+queue compete for its messages. RabbitMQ controls routing and acknowledgements.
+`publish` returns the native confirmation (or `None`), not a handler result.
+Publisher confirmations do not mean subscribers finished processing. Native
+errors propagate; to raise on returned unroutable messages, configure the native
+broker with `default_channel=Channel(on_return_raises=True)` (import `Channel`
+from `faststream.rabbit`) and publish with `mandatory=True`. The native channel
+defaults to `on_return_raises=False`. The adapter adds no retry, default queue or
+delivery guarantees.
+Use `native` for further FastStream features. TestRabbitBroker is a testing utility,
+not a production in-memory broker. Additional backend coverage for both runtimes
+is deferred until the Events path is complete.
 
 ## A local job
 
@@ -445,7 +523,8 @@ from papilio_tasks.infra.taskiq.queues.redis import RedisQueue
 Import only the backend you installed. Scheduler convenience imports from
 `apps.schedulers.backends.rabbit` and `.redis` also remain available.
 Projection assembly is available through its application module, with independent
-CLI commands and installation extras. Events remain unimplemented.
+CLI commands and installation extras. Events currently support explicit RabbitMQ
+registration (see Events below).
 
 The package has three main responsibility groups:
 
@@ -457,7 +536,8 @@ Applications depend on tools and infrastructure; infrastructure may use independ
 policy types from tools. Tools do not import apps, infrastructure or optional
 runtimes. Both `apps` and `tools` have lightweight package initializers.
 `cli/` remains the command entry point. `tools/retry.py` holds configuration;
-`infra/taskiq/retry.py` adapts it to Taskiq. Events remain unimplemented.
+`infra/taskiq/retry.py` adapts it to Taskiq. Events currently support explicit
+RabbitMQ registration (see Events below).
 
 ## Local projections
 
@@ -608,8 +688,8 @@ ordinary Dishka providers, separate app containers and request cleanup.
 Public `projection.run(...)` is standalone and invokes local hooks only.
 Queued execution resolves the Projection and the registrar-selected shared hooks
 from the supplied providers in the same job scope. The core itself requires no
-Taskiq, Dishka or database dependencies. App-managed manual execution and a
-dedicated CLI remain subsequent work.
+Taskiq, Dishka or database dependencies. App-managed manual execution remains
+subsequent work; queued workers and retry beats have dedicated CLI commands below.
 
 ### Low-level task registration
 
@@ -630,6 +710,75 @@ arguments and `write`'s return annotation, injects the Projection and selected
 shared hook collection, and calls the existing pipeline. `_job`, `_hooks` and
 `dishka_container` are reserved injection parameter names. Registration metadata
 is separate from task names. The class receives no `_task` attribute.
+
+### Backend-specific Projection queues
+
+Use `RabbitProjection[T, D, R]` or `RedisProjection[T, D, R]` with the matching
+registrar to select queues per class. `RabbitDirect[T, R]` and `RedisDirect[T, R]`
+reuse the identity transform from `Direct`. The pipeline, hooks, DI and retry
+policy remain shared.
+
+```python
+from typing import ClassVar
+
+from papilio_tasks.apps.projections.backends.rabbit import (
+    RabbitBroker, RabbitDirect, RabbitQueue,
+)
+from papilio_tasks.apps.projections.registry.rabbit import RabbitRegistrar
+
+products = RabbitQueue(name="products", durable=True)
+
+class Product(RabbitDirect[int, int]):
+    queue: ClassVar[RabbitQueue | None] = products
+
+    async def read(self, id: int) -> int:
+        return id  # Fetch from database A through injected services.
+
+    async def write(self, data: int) -> int:
+        return data  # Write to database B through injected services.
+
+class Products(RabbitDirect[list[int], int]):
+    queue: ClassVar[RabbitQueue | None] = products
+
+    async def read(self, ids: list[int]) -> list[int]:
+        return ids
+
+    async def write(self, data: list[int]) -> int:
+        return len(data)
+
+transport = RabbitBroker("amqp://guest:guest@localhost/")
+registry = RabbitRegistrar(transport)
+registry.include(Product)
+registry.include(Products)
+transport.consume("products")  # Select queues for this worker.
+# Pass registry and ordinary module providers to create_broker.
+```
+
+Single and batch tasks have distinct task names and share the same queue. Identical
+queue specifications can be reused; conflicting settings for the same name fail
+during inclusion. Rabbit routing keys come from `RabbitQueue.routing_key`; do not
+override them through conflicting task labels.
+
+Selection order is `include(..., queue=spec)` → inherited class `queue` → broker
+default. An include override does not change the class. As with Schedulers,
+`queue=None` on include means use the class setting; a class whose queue is `None`
+uses the broker default. Strings are not queue specifications. Backend classes
+require their matching registrar; plain `Projection`/`Direct` with the common
+`Registrar` retain default-queue behavior.
+
+For Redis, import `RedisProjection`, `RedisDirect`, `RedisQueue` and
+`RedisStreamBroker` from `apps.projections.backends.redis`, and `RedisRegistrar`
+from `apps.projections.registry.redis`. A `RedisQueue(name="products")` selects the
+publication destination. Configure worker subscriptions explicitly using the
+broker's `queue_name` and `additional_streams`; class queue selection does not
+change subscriptions or consumer groups. Several projections can share a stream.
+
+Inclusion registers queue configuration and a task without opening connections.
+Rabbit's broker lifecycle or explicit `declare_queue` performs server declaration;
+Redis retains its native stream lifecycle. Discovery via
+`create_broker(registrar=registry, modules=[...])` uses the supplied backend registrar
+and each class's queue. Install only the selected `projection-rabbit` or
+`projection-redis` extra; neither backend imports the other.
 
 ### Application and publication
 
@@ -842,7 +991,7 @@ class RecordSend(Hook[Published]):
         self.audit = audit
 
     async def run(self, event: Published) -> None:
-        await self.audit.record(event.task_id)
+        await self.audit.record(event.result.task_id)
 
 
 class AppPublishHooks(PublishHooks):
@@ -871,11 +1020,14 @@ are resolved; publishing does not construct the worker's Projection or its datab
 services. This scope is independent of the caller's HTTP request/transaction.
 Without selected hooks, enqueue calls native publication directly with no scope.
 
-`after_send` receives `Published(call, task_id)` after native `kiq` returns.
+`after_send` receives `Published(call, result)` after native `kiq` returns;
+`result` is the unchanged task handle (`event.result.task_id`).
 `on_error` receives `PublishFailed(call, error)` when native `kiq` raises.
-`call` contains the qualified projection name, registered `task_name`, `args` and
-a read-only shallow copy of `kwargs`; nested values remain references. These are
-in-process observations, not durable or serialized message snapshots.
+`call.sender` identifies the qualified Projection class. `call.meta["task_name"]`
+contains its registered Taskiq name; `call.args` and a read-only shallow copy of
+`call.kwargs` describe the invocation. Metadata is also read-only; nested values
+remain references. These are in-process observations, not durable or serialized
+message snapshots.
 
 `Handler(..., failure="continue")` logs a hook error and continues. The default
 `"raise"` stops remaining hooks. A failed error hook does not replace the original
@@ -884,8 +1036,9 @@ missing container and DI resolution failures occur before send and do not invoke
 send-error hooks. Cancellation propagates directly, with scope cleanup.
 
 If native publication returned but an after-send hook or scope cleanup failed,
-`PublishError` carries the returned `task_id` and chains the original error. It
-does not invoke send-error hooks or resend. Successful enqueue returns the native
+`PublishError.result` carries the returned task handle and chains the original
+error (`error.result.task_id` retrieves its ID). It does not invoke send-error
+hooks or resend. Successful enqueue returns the native
 task handle unchanged. A failed `kiq` is **not proof of non-delivery**: network
 outcomes may be ambiguous, or native `post_send` middleware may fail after sending.
 Neither a successful send nor its hook establishes worker completion.
@@ -989,3 +1142,364 @@ Install development dependencies with
 and are cleaned up. `TEST_PAPILIO_CLI` can select an installed CLI executable for
 the worker/beat integration test. Tests establish behavior, not throughput,
 network recovery or exactly-once execution.
+
+## Events
+
+Use your existing Pydantic model or dataclass as the payload. A publisher declares
+its exchange/route; each subscriber references that publisher and selects its own
+queue. Services enter subscribers through ordinary Dishka providers.
+
+```python
+import asyncio
+
+from dishka import Provider, Scope, provide
+from faststream.rabbit import RabbitBroker as NativeRabbitBroker
+from pydantic import BaseModel
+
+from papilio_tasks.apps.events.application import create_app
+from papilio_tasks.apps.events.publishers.rabbit import (
+    ExchangeType,
+    RabbitExchange,
+    RabbitPublisher,
+)
+from papilio_tasks.apps.events.registry.rabbit import RabbitRegistrar
+from papilio_tasks.apps.events.subscribers.rabbit import (
+    RabbitQueue,
+    RabbitSubscriber,
+)
+from papilio_tasks.infra.faststream.brokers.backends.rabbit import RabbitBroker
+
+
+class OrderData(BaseModel):
+    order_id: int
+
+
+class OrderCreated(RabbitPublisher[OrderData]):
+    exchange = RabbitExchange("orders", type=ExchangeType.TOPIC)
+    routing_key = "order.created"
+
+
+class FinanceService:
+    async def record_order(self, order_id: int) -> None:
+        print("Record order", order_id)
+
+
+class Finance(RabbitSubscriber[OrderData]):
+    publisher = OrderCreated
+    queue = RabbitQueue("finance.orders", durable=True)
+
+    def __init__(self, service: FinanceService):
+        self.service = service
+
+    async def run(self, event: OrderData) -> None:
+        await self.service.record_order(event.order_id)
+
+
+class Dependencies(Provider):
+    service = provide(FinanceService, scope=Scope.REQUEST)
+    finance = provide(Finance, scope=Scope.REQUEST)
+
+
+registry = RabbitRegistrar(
+    RabbitBroker(NativeRabbitBroker("amqp://guest:guest@localhost/"))
+)
+registry.publisher(OrderCreated, persist=True)
+registry.subscriber(Finance)
+app = create_app(registrar=registry, providers=[Dependencies()])
+shutdown = asyncio.Event()  # Set by your application's shutdown handler.
+
+
+async def serve() -> None:
+    try:
+        await app.start()
+        await OrderCreated.publish(OrderData(order_id=42))
+        await shutdown.wait()
+    finally:
+        await app.stop()
+```
+
+A producer-only process registers its publishers, calls `create_app` without
+subscriber providers and uses `await app.connect()` before publishing. The
+exchange, consumer queues and bindings must already exist (provision them or start
+the worker first). `connect()` does not start consumers or provision topology.
+A worker registers subscribers and uses `await app.start()`. Registering a
+subscriber reads its publisher's route; it does not register a producer binding
+or construct any producer service. Workers can also register publishers when
+needed. Assembly itself opens no connections.
+
+The same event can have finance, notification and commerce subscribers: reference
+`OrderCreated` from each class and give each a different queue. Replicas sharing
+a queue compete for messages; they do not each receive a copy. This is native
+RabbitMQ routing, not a Python loop calling all subscribers. A publisher requires
+a named exchange. The queue's empty routing key is filled from the publisher
+without modifying the class's queue; an explicitly different key is rejected.
+Conflicting same-name topology definitions are rejected within one registrar;
+RabbitMQ validates topology across processes.
+
+Manual registration must finish before `create_app`; optional module discovery
+runs during assembly (see below). Native options
+such as `ack_policy`, `consume_args` and `channel` can be passed to
+`registry.subscriber`; publication options such as `headers`, `message_id` and
+`correlation_id` can be passed to `publish`. Additional options retain native
+runtime validation. Subscriber `run(self, event: Payload)` must be async. Its
+return is ignored; it does not automatically publish a reply. Dishka resolves
+subscribers within the message scope and closes request resources on success or
+failure. For message metadata in a provider, use the integration's `StreamMessage`
+context; concrete `RabbitMessage` injection requires an explicit context provider.
+
+`publish` returns the native publication result, not subscriber results. It does
+not guarantee business processing or turn database commits and sends into a
+transaction. Native errors propagate; this layer adds no retry policy. Optional
+app-wide publication and subscriber hooks are described below.
+Broker confirmation and unroutable-message behavior depend on the selected native
+channel/options, just as in the infrastructure adapter.
+
+Runtime bindings live outside user classes. A publisher class has one active
+sender per process; a second registration fails rather than replacing it. Stop
+releases only this app's bindings and closes its container even if broker shutdown
+raises. Always call `stop()` in `finally`, including after failed startup. A stopped
+app/native broker is not reassembled with another container: create a fresh native
+broker and registrar. Use separate publisher subclasses for simultaneous producer
+bindings to different brokers. Lifecycle calls can integrate with the host
+application's entry point; standalone consumers use the Events CLI below.
+
+### Events CLI
+
+Expose the result of `create_app(...)` as `app` in your entry module, then run:
+
+```bash
+papilio_tasks events run myapp.events:app
+papilio_tasks events run myapp.events:app --workers 4
+papilio_tasks events run myapp.events:app --reload
+papilio_tasks events run --help
+```
+
+For a synchronous factory, expose a function that builds fresh broker, registrar,
+providers and application objects on every call:
+
+```python
+def build():
+    registrar = RabbitRegistrar(RabbitBroker(NativeRabbitBroker(settings.amqp)))
+    return create_app(
+        registrar=registrar,
+        providers=[Services()],
+        publishers=["myapp.modules"],
+        subscribers=["myapp.modules"],
+    )
+```
+
+```bash
+papilio_tasks events run myapp.events:build --factory --workers 4
+papilio_tasks events run myapp.events:build --factory --app-dir ./src
+```
+
+`events` installation extras include FastStream's CLI dependencies. Commands
+forward to the native FastStream runner, including worker processes, reload,
+logging and application loading. `--reload` and multiple workers cannot be used
+together. Factory/import time is assembly only; open external resources during
+lifecycle or DI resolution, since the native supervisor also loads the entry.
+
+The returned Application supports FastStream execution while retaining `connect`,
+`start` and `stop`: `connect` is for publishers only, while CLI execution starts
+consumption. On shutdown, broker processing stops before the DI container closes
+and publisher bindings are released. Startup failure and cancellation also run
+cleanup. Each worker owns its own container and connections. Events needs no beat.
+Existing publish and subscribe hooks use their normal DI scopes in CLI execution.
+
+
+### Publish after a function succeeds
+
+Use the standalone `publish` decorator to select the message from an async
+function's return value. Direct `OrderCreated.publish(payload)` remains available.
+
+```python
+from papilio_tasks.apps.events import publish
+
+
+class Orders:
+    @publish(
+        OrderCreated,
+        select=lambda order: OrderData(order_id=order.id),
+        headers={"origin": "orders"},
+    )
+    async def create(self, data: OrderInput) -> Order:
+        return await self.repository.create(data)
+```
+
+The wrapper awaits the function, calls the synchronous selector once, awaits
+`OrderCreated.publish` once, and returns the original function result unchanged.
+`select` returns the Publisher's single payload, not a mapping of keyword
+arguments. Extra decorator options forward to native publication. Existing
+app-wide publish hooks run through the same send path, without duplicate hooks.
+The function's metadata, call signature and result type are preserved; a selector
+with its own parameter annotation can also check access to its input fields.
+
+Only async functions/methods are accepted. Definition requires neither runtime
+installation nor prior registration; the publisher must be registered when the
+function is invoked. Function/selector exceptions or cancellation prevent sending.
+Send errors and `PublishError` from post-send hooks propagate instead of returning
+the function result. There is no detached background send, automatic retry or
+implicit database commit: the function owns its transaction boundary.
+
+### Events layout and imports
+
+`publishers/` owns the Publisher base/decorator, runtime bindings, sender contract,
+producer hook adapter (`send.py`) and backend publisher definitions. `subscribers/`
+owns the Subscriber base and backend definitions. `registry/` coordinates native
+registration of both roles; `application.py` owns discovery, DI and lifecycle.
+Shared hook contracts stay in `tools/hooks`; transport code stays in `infra`.
+
+Pure public imports remain available from the Events package. Backend imports
+are explicit and optional:
+
+```python
+from papilio_tasks.apps.events import Publisher, Subscriber, publish
+from papilio_tasks.apps.events.publishers.rabbit import RabbitPublisher
+from papilio_tasks.apps.events.subscribers.rabbit import RabbitSubscriber
+```
+
+These replace the previous combined `events.backends.rabbit` imports. The former
+root `base.py`, `bindings.py`, `contracts.py` and producer `publish.py` modules have
+moved into their owning groups; they are not maintained as duplicate import paths.
+Package initializers import only the pure public classes/decorator.
+
+### Events discovery
+
+For modular applications, let the existing Bootstrapper find definitions under
+selected Python package roots:
+
+```python
+app = create_app(
+    registrar=registry,
+    providers=[OrdersProvider(), FinanceProvider()],
+    publishers=("shop.orders",),
+    subscribers=("shop.finance", "shop.notifications"),
+)
+```
+
+The `publishers` roots are searched for `publishers.py` or `publishers/` packages;
+`subscribers` roots are searched for `subscribers.py` or `subscribers/`. Nested
+packages and definitions in those packages' `__init__.py` files are supported.
+Only concrete classes defined in discovered modules are registered. Imported base
+classes and imported publisher references are not extra registrations; aliases
+and overlapping roots are handled once in deterministic order.
+
+The two path lists are independent and default to empty. A producer can select
+only its publisher package roots without loading consumer packages elsewhere.
+As with the shared Bootstrapper, Python imports execute package initializers;
+keep them free of startup side effects and use narrow roots for isolation.
+User imports from those initializers can still load other modules. Subscriber-only
+discovery reads referenced publisher routes but does not bind those publishers
+for sending. Select publisher roots or register them manually when sending from
+the same application is needed.
+
+Providers remain explicit: discovery does not construct services or register
+subscriber factories in Dishka. Manual registrations keep their options when the
+same class is also discovered. Different classes sharing a route or queue remain
+distinct registrations; a sender already owned by another app is an error.
+The backend registrar rejects definitions from another backend. Import and
+registration errors propagate during assembly, before startup, and failed
+assembly releases this registrar's sender bindings. Build a fresh broker and
+registrar after a failed assembly, as native definitions may already be registered.
+
+
+### Events hooks
+
+Choose collections once for the application. `publish_hooks` applies to every
+registered Publisher; `subscribe_hooks` applies to every registered Subscriber,
+including discovered definitions. They do not attach to other applications in the
+same process. Register the collections and their dependencies in ordinary Dishka
+providers. Hook construction and attachment remain separate operations.
+
+```python
+from dishka import Provider, Scope, provide
+from papilio_tasks.tools.hooks import Handler, Hook
+from papilio_tasks.tools.hooks.publish import Published, PublishHooks
+from papilio_tasks.tools.hooks.subscribe import SubscribeCall, SubscribeHooks
+
+
+class RecordSend(Hook[Published]):
+    def __init__(self, audit: AuditService):
+        self.audit = audit
+
+    async def run(self, event: Published) -> None:
+        await self.audit.record(event.call.sender)
+
+
+class RecordRun(Hook[SubscribeCall]):
+    def __init__(self, audit: AuditService):
+        self.audit = audit
+
+    async def run(self, event: SubscribeCall) -> None:
+        await self.audit.record(event.subscriber)
+
+
+class AppPublishHooks(PublishHooks):
+    def __init__(self, audit: RecordSend):
+        super().__init__(after_send=(Handler(audit),))
+
+
+class AppSubscribeHooks(SubscribeHooks):
+    def __init__(self, audit: RecordRun):
+        super().__init__(after_run=(Handler(audit),))
+
+
+class HookProvider(Provider):
+    scope = Scope.REQUEST
+    sent = provide(RecordSend)
+    consumed = provide(RecordRun)
+    publication = provide(AppPublishHooks)
+    subscription = provide(AppSubscribeHooks)
+
+
+app = create_app(
+    registrar=registry,
+    providers=[HookProvider(), *providers],  # Also supply AuditService.
+    publish_hooks=AppPublishHooks,
+    subscribe_hooks=AppSubscribeHooks,
+)
+```
+
+Publication uses the same `PublishHooks` contract and outcome runner as Projection.
+A fresh producer request scope resolves the collection before native publication
+and closes after its hooks. No subscriber services are constructed; the caller's
+HTTP/message transaction scope is not reused. Without publish hooks, sending opens
+no extra scope. Direct calls to the infrastructure/native broker bypass app hooks.
+Events currently offers app-wide selection only; Projection's existing shared and
+local selections remain available.
+
+`Published[R].result` is the native return, including `None`. `PublishFailed.error`
+is the native send exception. `call.sender` is the qualified Publisher class,
+`call.args` contains the payload, and `call.kwargs` captures publication options.
+`call.meta` describes the registered Rabbit `exchange` and `routing_key`; it is
+not a claim about the final destination if per-call options override the route.
+Options and metadata are shallow read-only mappings, not serialized snapshots.
+After-send or scope-cleanup failure raises `PublishError(result)` without resending
+or calling send-error hooks. Send errors and cancellation retain their original
+meaning; a send error does not prove that the message was not delivered.
+
+Subscriber hooks resolve in the existing message scope with the same scoped
+services as the subscriber, then execute `before_run -> run -> after_run`.
+Before/after hooks receive `SubscribeCall[T](subscriber, data)`; `data` is the
+parsed payload, still referenced rather than copied. Error hooks receive
+`SubscribeFailed[T](call, stage, error)`, where stage is `before_run`, `run` or
+`after_run`. A propagated before-hook failure prevents `run`; an after-hook failure
+occurs after business work. A failing error hook does not replace the primary
+exception. Cancellation propagates directly rather than invoking error hooks.
+Parsing, validation, dependency construction, scope cleanup and broker-ack failures
+are outside these execution hooks. For message metadata, hook providers can request
+`StreamMessage` from the existing message context.
+
+Both collections use ordered `Handler` attachments. Default `failure="raise"`
+stops the remaining hooks; `failure="continue"` logs that hook failure and
+continues. It never suppresses a failure of the subscriber's `run`. Native
+acknowledgement/redelivery policy still applies to propagated consumer errors;
+after-run hook failure can therefore make already-completed business work subject
+to redelivery under the user's policy. `after_send` means native publication
+returned; `after_run` means the subscriber function returned, not that broker ack
+or all other subscribers completed. No automatic retry, inbox or outbox is added.
+
+Publication payload migration: use `call.sender` instead of `call.projection`,
+`call.meta["task_name"]` instead of `call.task_name` for Taskiq, and
+`event.result.task_id` / `error.result.task_id` instead of `event.task_id` /
+`error.task_id`. Projection pipeline hook payloads are unchanged.
