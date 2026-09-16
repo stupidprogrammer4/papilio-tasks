@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/assets/logo.webp" alt="Papilio Tasks logo" width="320">
+  <img src="docs/assets/logo.webp" alt="Papilio Tasks logo" width="520">
 </p>
-
-# Papilio Tasks
 
 Modular background jobs for Python 3.13+. Schedulers and projections use Taskiq
 and ordinary Dishka providers. Projections run read/transform/write pipelines
