@@ -1,6 +1,7 @@
 from copy import deepcopy
 from typing import Any, cast
 
+from faststream import AckPolicy
 from faststream.rabbit import RabbitExchange, RabbitQueue
 from faststream.rabbit.schemas.queue import ClassicQueueArgs
 
@@ -66,10 +67,21 @@ class RabbitRegistrar(Registrar):
         self._publishers.add(cls)
         self._exchanges[exchange.name] = exchange
 
-    def subscriber(self, cls: type[Subscriber[Any]], **options: Any) -> None:
+    def subscriber(
+        self,
+        cls: type[Subscriber[Any]],
+        *,
+        ack_policy: AckPolicy | None = None,
+        **options: Any,
+    ) -> None:
         self.check_open()
         if not isinstance(cls, type) or not issubclass(cls, RabbitSubscriber):
             raise TypeError("Register a RabbitSubscriber class")
+        policy = cls.ack_policy if ack_policy is None else ack_policy
+        if policy is not None:
+            if not isinstance(policy, AckPolicy):
+                raise TypeError("Expected AckPolicy or None")
+            options["ack_policy"] = policy
         handler = self.handler(cls)
         exchange = self._exchange(cls.publisher)
         queue = cls.queue

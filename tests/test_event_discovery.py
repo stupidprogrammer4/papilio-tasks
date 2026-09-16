@@ -1,4 +1,6 @@
+import asyncio
 import importlib
+import os
 import sys
 import textwrap
 from uuid import uuid4
@@ -8,7 +10,9 @@ import pytest
 pytest.importorskip("dishka_faststream")
 pytest.importorskip("faststream.rabbit")
 
+from aio_pika import connect_robust
 from dishka import Provider, Scope
+from faststream import AckPolicy
 from faststream.rabbit import RabbitBroker as NativeRabbitBroker
 from faststream.rabbit import TestRabbitBroker
 
@@ -90,6 +94,98 @@ def provider(module):
     result.provide(module.Service)
     result.provide(module.Finance)
     return result
+
+
+@pytest.mark.parametrize("override", [False, True])
+async def test_live_discovered_ack_policy_and_explicit_override(
+    package, override
+):
+    url = os.getenv("TEST_RABBIT_URL")
+    if not url:
+        pytest.skip("Requires isolated RabbitMQ")
+    name, write = package
+    write(
+        "finance/subscribers.py",
+        """
+        import asyncio
+        from faststream import AckPolicy, StreamMessage
+        from papilio_tasks.apps.events.publishers.rabbit import (
+            RabbitPublisher, RabbitExchange,
+        )
+        from papilio_tasks.apps.events.subscribers.rabbit import (
+            RabbitSubscriber, RabbitQueue,
+        )
+        messages = []
+        done = asyncio.Event()
+        expected = 2
+        class Created(RabbitPublisher[int]):
+            exchange = RabbitExchange("APP")
+            routing_key = "created"
+        class Parent(RabbitSubscriber[int]):
+            publisher = Created
+            queue = RabbitQueue("APP", durable=True, arguments={
+                "x-dead-letter-exchange": "",
+                "x-dead-letter-routing-key": "APP-dead",
+            })
+            ack_policy = AckPolicy.NACK_ON_ERROR
+        class Finance(Parent):
+            def __init__(self, message: StreamMessage):
+                self.message = message
+            async def run(self, event: int) -> None:
+                messages.append(self.message)
+                if len(messages) == expected:
+                    done.set()
+                if len(messages) == 1:
+                    raise ValueError("first attempt")
+        """,
+    )
+    module = importlib.import_module(name + ".finance.subscribers")
+    module.expected = 1 if override else 2
+    native = NativeRabbitBroker(url, logger=None, ack_policy=AckPolicy.ACK)
+    reg = RabbitRegistrar(RabbitBroker(native))
+    reg.publisher(module.Created)
+    if override:
+        reg.subscriber(module.Finance, ack_policy=AckPolicy.REJECT_ON_ERROR)
+    providers = Provider(scope=Scope.REQUEST)
+    providers.provide(module.Finance)
+    app = create_app(
+        registrar=reg, subscribers=[name + ".finance"], providers=[providers]
+    )
+    assert len(native.subscribers) == 1
+    monitor = await connect_robust(url)
+    channel = await monitor.channel()
+    dead = await channel.declare_queue(name + "-dead", durable=True)
+    try:
+        await app.start()
+        await module.Created.publish(42)
+        await asyncio.wait_for(module.done.wait(), timeout=10)
+        await app.stop()
+        assert [m.raw_message.redelivered for m in module.messages] == (
+            [False] if override else [False, True]
+        )
+        assert [m.committed.value for m in module.messages] == (
+            ["REJECTED"] if override else ["NACKED", "ACKED"]
+        )
+        failed = await dead.get(fail=False)
+        if override:
+            assert failed is not None
+            assert failed.headers["x-death"][0]["reason"] == "rejected"
+            await failed.ack()
+        else:
+            assert failed is None
+        queue = await channel.get_queue(name)
+        assert await queue.get(fail=False) is None
+        assert module.Finance.ack_policy is AckPolicy.NACK_ON_ERROR
+    finally:
+        await app.stop()
+        try:
+            await asyncio.gather(
+                channel.queue_delete(name),
+                channel.queue_delete(name + "-dead"),
+            )
+            await channel.exchange_delete(name)
+        finally:
+            await monitor.close()
 
 
 async def test_discovery_packages_aliases_abstract_and_imported_classes(
