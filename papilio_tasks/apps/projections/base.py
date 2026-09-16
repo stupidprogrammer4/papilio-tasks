@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from functools import wraps
+from inspect import iscoroutinefunction
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from papilio_tasks.tools.hooks import emit
 from papilio_tasks.tools.hooks.projection import (
@@ -13,6 +18,10 @@ from papilio_tasks.tools.hooks.projection import (
 )
 
 from .contracts import ProjectionContract
+
+if TYPE_CHECKING:
+    from taskiq import AsyncTaskiqTask
+    from taskiq.decor import AsyncTaskiqDecoratedTask
 
 
 class Projection[T, D, R](ProjectionContract[T, D, R], ABC):
@@ -33,6 +42,45 @@ class Projection[T, D, R](ProjectionContract[T, D, R], ABC):
 
     @abstractmethod
     async def write(self, data: D) -> R: ...
+
+    @classmethod
+    def task(cls) -> AsyncTaskiqDecoratedTask[Any, R]:
+        from papilio_tasks.infra.taskiq import bindings
+
+        return bindings.get(cls)
+
+    @classmethod
+    async def enqueue(cls, *args: Any, **kwargs: Any) -> AsyncTaskiqTask[R]:
+        """Send read arguments without constructing a Projection instance."""
+        return await cls.task().kiq(*args, **kwargs)
+
+    @classmethod
+    def project[**P, S](
+        cls, *, select: Callable[[Any], Mapping[str, Any]]
+    ) -> Callable[
+        [Callable[P, Awaitable[S]]], Callable[P, Coroutine[Any, Any, S]]
+    ]:
+        """Select keyword arguments after success, enqueue, return the result.
+
+        Defining the decorator does not require a task runtime or registration.
+        Submission happens through enqueue; this does not imply a DB commit.
+        """
+
+        def decorate(
+            func: Callable[P, Awaitable[S]],
+        ) -> Callable[P, Coroutine[Any, Any, S]]:
+            if not iscoroutinefunction(func):
+                raise TypeError("project requires an async function")
+
+            @wraps(func)
+            async def wrapped(*args: P.args, **kwargs: P.kwargs) -> S:
+                result = await func(*args, **kwargs)
+                await cls.enqueue(**select(result))
+                return result
+
+            return wrapped
+
+        return decorate
 
     async def run(self, *args: Any, **kwargs: Any) -> R:
         """Run independently with this Projection's local hooks only."""
