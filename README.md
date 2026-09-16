@@ -9,6 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.13%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.13+">
   <a href="https://github.com/taskiq-python/taskiq"><img src="https://img.shields.io/badge/powered_by-Taskiq-D94A28?style=flat-square" alt="Powered by Taskiq"></a>
+  <a href="https://github.com/ag2ai/faststream"><img src="https://img.shields.io/badge/powered_by-FastStream-009688?style=flat-square" alt="Powered by FastStream"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-202020?style=flat-square" alt="MIT License"></a>
 </p>
 
