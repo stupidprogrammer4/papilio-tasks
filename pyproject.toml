@@ -33,7 +33,7 @@ dev = ["pytest>=9,<10", "pytest-asyncio>=1.3,<2", "ruff", "pyright==1.1.390"]
 packages = ["papilio_tasks"]
 
 [tool.hatch.build.targets.sdist]
-include = ["papilio_tasks", "README.md", "LICENSE", "pyproject.toml"]
+only-include = ["papilio_tasks", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.ruff]
 line-length = 79
