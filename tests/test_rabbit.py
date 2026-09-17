@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 pytest.importorskip("taskiq_aio_pika")
+from aio_pika import connect  # noqa: E402
 from taskiq_aio_pika import Exchange, Queue, QueueType  # noqa: E402
 
 from papilio_tasks.apps.schedulers import Registrar, Scheduler  # noqa: E402
@@ -233,9 +234,14 @@ async def test_rabbit_subset_consumption_and_explicit_declaration():
         with pytest.raises(ChannelPreconditionFailed):
             await broker.declare_queue(Queue(name=direct.name, durable=False))
     finally:
-        async with broker.native.write_conn.channel() as channel:
-            for config in (first, second, direct):
-                await channel.queue_delete(config.name)
-            await channel.queue_delete(f"{prefix}-dead")
-            await channel.exchange_delete(prefix)
         await broker.native.shutdown()
+        # Stop robust channel restoration before deleting the test topology.
+        connection = await connect(os.environ["TEST_RABBIT_URL"])
+        try:
+            async with connection.channel() as channel:
+                for config in (first, second, direct):
+                    await channel.queue_delete(config.name)
+                await channel.queue_delete(f"{prefix}-dead")
+                await channel.exchange_delete(prefix)
+        finally:
+            await connection.close()
