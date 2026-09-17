@@ -1,6 +1,5 @@
-import asyncio
 import importlib
-from datetime import UTC, datetime
+from datetime import timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -221,11 +220,12 @@ async def test_native_retry_replays_pipeline_with_new_scope(
             task = schedules[0]
             assert task.task_id == handle.task_id
             assert task.args == [42] and task.kwargs == {"title": "product"}
-            assert not loop._is_schedule_ready_to_send(task, datetime.now(UTC))
-            await asyncio.sleep(
-                max(0, (task.time - datetime.now(UTC)).total_seconds())
+            assert task.time is not None
+            # Check the deadline itself, independent of machine scheduling lag.
+            assert not loop._is_schedule_ready_to_send(
+                task, task.time - timedelta(microseconds=1)
             )
-            assert loop._is_schedule_ready_to_send(task, datetime.now(UTC))
+            assert loop._is_schedule_ready_to_send(task, task.time)
             await beat.on_ready(
                 source.native, (await source.native.get_schedules())[0]
             )
