@@ -526,6 +526,20 @@ IDs on add, and replacement requires an existing ID with the same task name.
 Its replacement is atomic within one event loop; a dispatch already past
 `pre_send` can still publish the previous input.
 
+Memory's public `get_schedule()` and `get_schedules()` return full independent
+copies, including nested payloads. Its `native.get_schedules()` is an internal,
+borrowed Beat feed: cached timing records start with empty payloads. Do not use
+or mutate these records as public snapshots. Taskiq's `pre_send` loads a fresh
+copy of the stored payload only for the due task. Replacing or deleting a schedule
+invalidates its old feed record, even when a replacement has identical values.
+Native send hooks require records obtained from that source's native feed.
+
+This avoids copying every payload during Beat refresh. Public bulk reads still
+copy all returned data, and each delivery pays for its own payload copy. Frequent
+or simultaneous large deliveries still consume CPU. A cached feed record may
+retain its latest delivery payload until replacement, deletion or source disposal;
+repeated sends replace that copy rather than accumulating delivery history.
+
 `Source` implements native reading; `MutableSource` also delegates add/delete to a
 native source known to support them. Use `Source(LabelScheduleSource(broker))`
 for label-based schedules. These read-only adapters do not expose editing methods.
@@ -538,6 +552,17 @@ For shared schedules, install `papilio-tasks[scheduler-redis]` and use
 `RedisSource`. It uses Taskiq's `ListRedisScheduleSource`; constructor options such
 as `prefix`, `buffer_size` and `serializer` are passed directly to that source.
 The broker is independent: a RabbitMQ broker can use this Redis source too.
+
+For large schedule sets or deployments with separate worker and Beat processes,
+prefer `RedisSource` over `MemorySource`. Keep memory storage for tests and small
+single-process setups. This recommendation concerns schedule storage; it does not
+require using Redis as the task broker or guarantee higher execution throughput.
+
+Measure refresh latency with your expected schedule count and payload sizes.
+The current [taskiq-redis 1.2.3 source](https://github.com/taskiq-python/taskiq-redis/blob/1.2.3/taskiq_redis/list_schedule_source.py)
+scans for overdue schedules on each refresh by default and reads all cron/interval
+schedules. Redis does not eliminate serialization or large-payload processing
+costs; these upstream scaling limits still apply.
 
 ```python
 from papilio_tasks.infra.taskiq.sources.backends.redis import RedisSource
