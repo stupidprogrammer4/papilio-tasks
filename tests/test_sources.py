@@ -87,17 +87,19 @@ async def test_memory_stale_dispatch_and_one_shot_cleanup():
         time=at,
     )
     await source.add_schedule(old)
-    source.native.pre_send(old)
+    old_feed = (await source.native.get_schedules())[0]
+    source.native.pre_send(old_feed)
     replacement = old.model_copy(update={"time": at + timedelta(hours=1)})
     await source.replace_schedule(replacement)
     # A send already past pre_send must not delete a subsequent replacement.
-    source.native.post_send(old)
+    source.native.post_send(old_feed)
     assert await source.get_schedule("report") == replacement
     with pytest.raises(ScheduledTaskCancelledError):
-        source.native.pre_send(old)
-    source.native.pre_send(replacement)
-    replacement.labels["schedule_id"] = "report"
-    source.native.post_send(replacement)
+        source.native.pre_send(old_feed)
+    feed = (await source.native.get_schedules())[0]
+    source.native.pre_send(feed)
+    feed.labels["schedule_id"] = "report"
+    source.native.post_send(feed)
     assert await source.get_schedules() == []
     with pytest.raises(ScheduledTaskCancelledError):
-        source.native.pre_send(replacement)
+        source.native.pre_send(feed)

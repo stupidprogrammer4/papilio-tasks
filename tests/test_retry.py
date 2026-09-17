@@ -317,7 +317,9 @@ async def test_native_retry_preserves_inputs_and_exact_attempts(
                 max(0, (task.time - datetime.now(UTC)).total_seconds())
             )
             assert loop._is_schedule_ready_to_send(task, datetime.now(UTC))
-            await beat.on_ready(source.native, task)
+            await beat.on_ready(
+                source.native, (await source.native.get_schedules())[0]
+            )
         expected = (
             min(attempts, failures + 1)
             if enabled and error is ConnectionError

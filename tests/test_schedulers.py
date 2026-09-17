@@ -278,7 +278,9 @@ async def test_native_scheduling_with_existing_source():
         create_broker(registrar=registrar)
     await broker.startup()
     try:
-        await beat.on_ready(source.native, (await source.get_schedules())[0])
+        await beat.on_ready(
+            source.native, (await source.native.get_schedules())[0]
+        )
         assert executed == [9]
         assert await source.get_schedules() == []
     finally:

@@ -226,7 +226,9 @@ async def test_native_retry_replays_pipeline_with_new_scope(
                 max(0, (task.time - datetime.now(UTC)).total_seconds())
             )
             assert loop._is_schedule_ready_to_send(task, datetime.now(UTC))
-            await beat.on_ready(source.native, task)
+            await beat.on_ready(
+                source.native, (await source.native.get_schedules())[0]
+            )
 
         if expected == 3:
             await dispatch_retry()
