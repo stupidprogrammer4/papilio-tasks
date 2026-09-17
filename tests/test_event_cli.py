@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -56,7 +57,8 @@ def test_missing_dependency_hint(monkeypatch, capsys):
     assert "papilio-tasks[events]" in capsys.readouterr().err
 
 
-def test_native_help_and_dependency_isolation():
+@pytest.mark.parametrize("colored", [False, True], ids=["plain", "colored"])
+def test_native_help_and_dependency_isolation(colored):
     code = """
 import importlib.abc
 import sys
@@ -68,15 +70,30 @@ sys.meta_path.insert(0, Block())
 from papilio_tasks.cli.main import main
 main(['events', 'run', '--help'])
 """
+    env = os.environ.copy()
+    for key in (
+        "GITHUB_ACTIONS",
+        "FORCE_COLOR",
+        "PY_COLORS",
+        "NO_COLOR",
+        "_TYPER_FORCE_DISABLE_TERMINAL",
+    ):
+        env.pop(key, None)
+    env["TERM"] = "xterm"
+    env.update({"GITHUB_ACTIONS": "true"} if colored else {"NO_COLOR": "1"})
     result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
     assert result.returncode == 0, result.stderr
+    assert ("\x1b[" in result.stdout) is colored
+    # Rich can insert ANSI styles inside flags; check the displayed text.
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     for flag in ("--workers", "--factory", "--reload", "--app-dir"):
-        assert flag in result.stdout
+        assert flag in output
 
 
 def test_application_import_error_is_not_masked(tmp_path):
