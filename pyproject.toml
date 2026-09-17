@@ -4,13 +4,25 @@ build-backend = "hatchling.build"
 
 [project]
 name = "papilio-tasks"
-version = "0.1.0a0"
+version = "1.0.0"
 description = "Scheduling, projection and event tools in the Papilio family"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 authors = [{name = "Pouya", email = "captainjoker757@gmail.com"}]
 dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Documentation = "https://github.com/stupidprogrammer4/papilio-tasks#readme"
+Source = "https://github.com/stupidprogrammer4/papilio-tasks"
+Issues = "https://github.com/stupidprogrammer4/papilio-tasks/issues"
+Changelog = "https://github.com/stupidprogrammer4/papilio-tasks/blob/main/CHANGELOG.md"
 
 [project.scripts]
 papilio_tasks = "papilio_tasks.cli.main:main"
@@ -33,7 +45,7 @@ dev = ["pytest>=9,<10", "pytest-asyncio>=1.3,<2", "ruff", "pyright==1.1.390"]
 packages = ["papilio_tasks"]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["papilio_tasks", "README.md", "LICENSE", "pyproject.toml"]
+only-include = ["papilio_tasks", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
 
 [tool.ruff]
 line-length = 79

@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.png">
-    <img src="docs/assets/logo-light.png" alt="Papilio Tasks" width="560">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/stupidprogrammer4/papilio-tasks/main/docs/assets/logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/stupidprogrammer4/papilio-tasks/main/docs/assets/logo-light.png">
+    <img src="https://raw.githubusercontent.com/stupidprogrammer4/papilio-tasks/main/docs/assets/logo-light.png" alt="Papilio Tasks" width="560">
   </picture>
 </p>
 <p align="center"><em>Background jobs and scheduling for modular Python applications.</em></p>
@@ -17,8 +17,23 @@
 
 Modular background jobs for Python 3.13+. Schedulers and projections use Taskiq
 and ordinary Dishka providers. Projections run read/transform/write pipelines
-locally or through workers. Events provide typed RabbitMQ publishers and
-subscribers using FastStream and Dishka.
+locally or through workers. Events provide typed publishers and subscribers for RabbitMQ, Kafka, Redis and
+NATS using FastStream and Dishka.
+
+## Version 1 compatibility
+
+The documented import paths, contracts, factory arguments and behavior form the
+public API for the 1.x series. Internal binding maps, underscore-prefixed helpers
+and third-party internals are not part of that compatibility commitment. Native
+handles and backend options follow the installed Taskiq/FastStream dependencies.
+See [release notes](https://github.com/stupidprogrammer4/papilio-tasks/blob/main/CHANGELOG.md)
+for the initial scope and known limitations, and Migration and development below
+for changes from development versions.
+
+CI covers standard CPython 3.13 and 3.14 on Linux. Other operating systems,
+free-threaded builds and prerelease Python versions are not currently validated.
+`requires-python` states the minimum interpreter version; it does not establish
+that future Python releases have already been tested.
 
 ## Installation
 
@@ -720,8 +735,8 @@ from papilio_tasks.infra.taskiq.queues.redis import RedisQueue
 Import only the backend you installed. Scheduler convenience imports from
 `apps.schedulers.backends.rabbit` and `.redis` also remain available.
 Projection assembly is available through its application module, with independent
-CLI commands and installation extras. Events currently support explicit RabbitMQ
-registration (see Events below).
+CLI commands and installation extras. Events support RabbitMQ, Kafka, Redis and
+NATS registration (see Events below).
 
 The package has three main responsibility groups:
 
@@ -733,8 +748,7 @@ Applications depend on tools and infrastructure; infrastructure may use independ
 policy types from tools. Tools do not import apps, infrastructure or optional
 runtimes. Both `apps` and `tools` have lightweight package initializers.
 `cli/` remains the command entry point. `tools/retry.py` holds configuration;
-`infra/taskiq/retry.py` adapts it to Taskiq. Events currently support explicit
-RabbitMQ registration (see Events below).
+`infra/taskiq/retry.py` adapts it to Taskiq.
 
 ## Local projections
 
@@ -1340,8 +1354,8 @@ and are cleaned up. `TEST_PAPILIO_CLI` can select an installed CLI executable fo
 the worker/beat integration test. Tests establish behavior, not throughput,
 network recovery or exactly-once execution.
 
-The [CI workflow](.github/workflows/ci.yml) runs on pushes, pull requests and manual
-dispatches using Python 3.13. It installs all supported backend extras, checks
+The [CI workflow](https://github.com/stupidprogrammer4/papilio-tasks/blob/main/.github/workflows/ci.yml) runs on pushes, pull requests and manual
+dispatches using Python 3.13 and 3.14. It installs all supported backend extras, checks
 style/types, runs the full suite against isolated Redis, RabbitMQ, Kafka and NATS
 with JetStream, and builds the distributions. Skipped tests fail CI, so missing
 backend dependencies or services cannot silently reduce coverage. Test reports

@@ -26,7 +26,13 @@ def test_distribution_excludes_local_copies_and_roundtrips(
         project / "papilio_tasks",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    for name in ("pyproject.toml", "README.md", "LICENSE", ".gitignore"):
+    for name in (
+        "pyproject.toml",
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE",
+        ".gitignore",
+    ):
         shutil.copy2(root / name, project / name)
     # A nested installed copy must not match the package's root selection.
     nested = project / ".local-review" / "env" / "site-packages"
@@ -72,6 +78,7 @@ def test_distribution_excludes_local_copies_and_roundtrips(
         }
         assert set(files) == set(expected) | {
             "README.md",
+            "CHANGELOG.md",
             "LICENSE",
             "pyproject.toml",
             "PKG-INFO",
