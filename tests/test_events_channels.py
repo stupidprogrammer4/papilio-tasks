@@ -518,7 +518,17 @@ async def test_live_fanout_patterns_counts_disconnect_and_no_replay(
             while sum(r["phase"] == "closed" for r in state.records) < 3:
                 await asyncio.sleep(0.02)
         await asyncio.gather(exact.stop(), pattern.stop())
-        assert await pub.Created.publish(pub.Order(id=3)) == 0
+        stopped_results = []
+        # Observe server cleanup in order: local stop does not confirm that
+        # Redis has processed the disconnect. Persistent subscribers must fail.
+        async with asyncio.timeout(2):
+            while True:
+                count = await pub.Created.publish(pub.Order(id=3))
+                stopped_results.append(count)
+                if count == 0:
+                    break
+                await asyncio.sleep(0.02)
+        check_records(state.records, 3)
         later = consumer(sub.Finance)
         await later.start()
         assert await pub.Created.publish(pub.Order(id=4)) == 1
@@ -536,7 +546,7 @@ async def test_live_fanout_patterns_counts_disconnect_and_no_replay(
         )
         assert [
             r["result"] for r in state.records if r["phase"] == "sent"
-        ] == [0, 2, 1, 0, 1]
+        ] == [0, 2, 1, *stopped_results, 1]
         assert await client.exists(pub.Created.channel) == 0
     finally:
         await asyncio.gather(exact.stop(), pattern.stop())
