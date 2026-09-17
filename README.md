@@ -1340,6 +1340,13 @@ and are cleaned up. `TEST_PAPILIO_CLI` can select an installed CLI executable fo
 the worker/beat integration test. Tests establish behavior, not throughput,
 network recovery or exactly-once execution.
 
+The [CI workflow](.github/workflows/ci.yml) runs on pushes, pull requests and manual
+dispatches using Python 3.13. It installs all supported backend extras, checks
+style/types, runs the full suite against isolated Redis, RabbitMQ, Kafka and NATS
+with JetStream, and builds the distributions. Skipped tests fail CI, so missing
+backend dependencies or services cannot silently reduce coverage. Test reports
+and service logs are retained as workflow artifacts; CI does not publish packages.
+
 ## Events
 
 Use your existing Pydantic model or dataclass as the payload. A publisher declares
