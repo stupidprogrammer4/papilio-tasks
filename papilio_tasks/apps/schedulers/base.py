@@ -21,6 +21,7 @@ class Scheduler(SchedulerContract, ABC):
 
     _backend: ClassVar[str] = "memory"
     retry: ClassVar[Retry | None] = None
+    schedule: ClassVar[list[dict[str, Any]] | None] = None
 
     @abstractmethod
     async def run(self, *args: Any, **kwargs: Any) -> Any: ...

@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from functools import wraps
 from inspect import Parameter, isabstract, iscoroutinefunction, signature
 from typing import Any, get_type_hints
@@ -32,10 +33,20 @@ class Registrar[S: Scheduler]:
         labels: dict[str, Any] | None = None,
     ) -> AsyncTaskiqDecoratedTask:
         execute, name = self._prepare(cls, name)
-        labels = retry_labels(self.broker.native, cls.retry, labels)
+        labels = self._labels(cls, labels)
         task = self.broker.register(execute, name=name, labels=labels)
         bindings.add(cls, task)
         return task
+
+    def _labels(
+        self, cls: type[S], labels: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        selected = dict(labels or {})
+        if cls.schedule is not None:
+            selected.setdefault("schedule", cls.schedule)
+        if "schedule" in selected:
+            selected["schedule"] = deepcopy(selected["schedule"])
+        return retry_labels(self.broker.native, cls.retry, selected)
 
     def _prepare(
         self, cls: type[S], name: str | None

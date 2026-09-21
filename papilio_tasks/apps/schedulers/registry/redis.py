@@ -7,7 +7,6 @@ from papilio_tasks.infra.taskiq.brokers.contracts.redis import (
     RedisStreamContract,
 )
 from papilio_tasks.infra.taskiq.queues.redis import RedisQueue
-from papilio_tasks.infra.taskiq.retry import retry_labels
 
 from ..backends.redis import RedisScheduler
 from .base import Registrar
@@ -29,7 +28,7 @@ class RedisRegistrar(Registrar[RedisScheduler]):
         queue: RedisQueue | None = None,
     ) -> AsyncTaskiqDecoratedTask:
         execute, name = self._prepare(cls, name)
-        labels = retry_labels(self.broker.native, cls.retry, labels)
+        labels = self._labels(cls, labels)
         selected = cls.queue if queue is None else queue
         if selected is not None:
             self.broker.add_queue(selected)
