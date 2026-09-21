@@ -302,6 +302,57 @@ broadcast/queue groups, offline backlog with push/pull and batch consumers,
 native `PubAck` and consumer ACK, request/reply, metadata and connection cleanup.
 They do not establish cluster failover, restart durability or throughput.
 
+## Configured applications
+
+The optional `apps.schedulers.redis.create_app` and
+`apps.projections.redis.create_app` factories configure a Redis worker, result
+backend and beat together. They retain the existing native objects and lower
+level factories. Install the matching `scheduler-redis` or `projection-redis`
+extra. Construction performs no network I/O.
+
+```python
+from papilio_tasks.apps.schedulers.redis import RedisSettings, create_app
+
+app = create_app(
+    RedisSettings(
+        url="redis://localhost:6379/0",
+        queue_name="jobs",
+        schedule_prefix="jobs:schedules",
+    ),
+    modules=["myapp.modules"],
+    providers=[],  # Ordinary module providers.
+)
+broker, scheduler = app.broker, app.scheduler
+```
+
+Run `broker` with the native worker CLI and `scheduler` with beat. Scheduler
+beat includes both its retry source and label schedules; projection beat
+includes its retry source. Queue/group/prefix/result TTL are explicit settings.
+The existing factories still support custom transports and source composition.
+
+`apps.events.rabbit.create_app(url, providers=..., publishers=...,
+subscribers=...)` assembles a Rabbit event application. `connect()` enables
+publishing; `start()` also starts consumers. Consumer topology is provisioned by
+the consumer, not by producer connections.
+
+A `producers=[...]` argument connects dependencies when a worker starts and
+closes them on shutdown or failed startup. A producer-only connection does not
+start these worker dependencies. For an HTTP process, compose all required
+connections explicitly through `Producers`:
+
+```python
+from papilio_tasks.apps.lifecycle import Producers
+
+# Pass this callable to the web application's lifespan argument.
+lifespan = Producers(jobs_app, projection_app, events_app)
+```
+
+Startup waits for all connections; failure cancels and waits for unfinished
+connections before closing every registered resource. Shutdown runs in reverse
+registration order and attempts every cleanup even if one fails. A group owns
+its connections; do not share the same connection across concurrently active
+groups. Applications are process-owned and should be recreated after shutdown.
+
 ## A local job
 
 ```python
@@ -2347,3 +2398,18 @@ Publication payload migration: use `call.sender` instead of `call.projection`,
 `call.meta["task_name"]` instead of `call.task_name` for Taskiq, and
 `event.result.task_id` / `error.result.task_id` instead of `event.task_id` /
 `error.task_id`. Projection pipeline hook payloads are unchanged.
+
+
+### Inspecting complete Redis schedules
+
+`RedisSource.list_schedules()` returns all stored schedules, including future
+one-shot entries. `get_schedules()` remains the native beat feed. The configured
+Redis scheduler factory returns `SchedulerApplication`; its `list_schedules()`
+combines that stored inventory with schedules declared in task labels, without
+consuming or editing scheduled jobs. Its `source` exposes the same Redis source
+used by beat, and `settings` exposes its configured namespaces.
+
+Inventory reads use incremental SCAN and one MGET per nonempty page, deduplicate
+SCAN repeats, omit records deleted during the read, and propagate malformed
+payloads/backend errors. Concurrent changes are not an atomic snapshot. The
+configured app closes the source pool on stop, including broker-stop failures.
