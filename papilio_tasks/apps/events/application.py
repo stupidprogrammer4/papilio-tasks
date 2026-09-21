@@ -6,6 +6,7 @@ from dishka import AsyncContainer, Provider, make_async_container
 from dishka_faststream import FastStreamProvider, setup_dishka
 from faststream import FastStream
 
+from papilio_tasks.apps.lifecycle import Producer, Producers
 from papilio_tasks.tools.bootstrap import Bootstrapper
 from papilio_tasks.tools.hooks.publish import PublishHooks
 from papilio_tasks.tools.hooks.subscribe import SubscribeHooks
@@ -19,11 +20,15 @@ class Application(FastStream):
     """Own broker and DI lifecycle; connect publishes, start also consumes."""
 
     def __init__(
-        self, registrar: Registrar, container: AsyncContainer
+        self,
+        registrar: Registrar,
+        container: AsyncContainer,
+        producers: Sequence[Producer] = (),
     ) -> None:
         self.registrar = registrar
         self.container = container
         self._closed = False
+        self.producers = Producers(*producers)
         # The native broker protocol only exposes lifecycle operations.
         super().__init__(
             cast(Any, registrar.broker.native), lifespan=self._lifespan
@@ -45,7 +50,12 @@ class Application(FastStream):
     async def start(self, **run_extra_options: Any) -> None:
         if self._closed:
             raise RuntimeError("Application is closed")
-        await super().start(**run_extra_options)
+        try:
+            await self.producers.connect()
+            await super().start(**run_extra_options)
+        except BaseException:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         if self._closed:
@@ -57,7 +67,10 @@ class Application(FastStream):
             try:
                 await self.container.close()
             finally:
-                self.registrar.close()
+                try:
+                    self.registrar.close()
+                finally:
+                    await self.producers.stop()
 
 
 def create_app(
@@ -66,6 +79,7 @@ def create_app(
     providers: Sequence[Provider] = (),
     publishers: Sequence[str] = (),
     subscribers: Sequence[str] = (),
+    producers: Sequence[Producer] = (),
     publish_hooks: type[PublishHooks] | None = None,
     subscribe_hooks: type[SubscribeHooks] | None = None,
 ) -> Application:
@@ -75,6 +89,7 @@ def create_app(
     packages. Providers remain explicit. Existing manual registration wins.
     Assembly opens no connections; callers start and stop the returned app.
     """
+    Producers(*producers)
     registrar.check_open()
     native = registrar.broker.native
     try:
@@ -109,4 +124,4 @@ def create_app(
         registrar.close()
         raise
     registrar.attach()
-    return Application(registrar, container)
+    return Application(registrar, container, producers)
