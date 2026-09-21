@@ -402,6 +402,24 @@ scheduler classes. There is no `factory(cls)` or Binding to register. Supplied
 provider graphs are validated at assembly; a scheduler missing from those
 providers raises Dishka's missing-factory error when a worker resolves it.
 
+Recurring defaults belong on the scheduler class and work with discovery:
+
+```python
+class DailyReport(Scheduler):
+    schedule = [{"cron": "0 3 * * *", "kwargs": {"account_id": 7}}]
+
+    async def run(self, account_id: int) -> None:
+        ...
+```
+
+`schedule` accepts Taskiq label schedule entries (`cron`, `interval`, arguments
+and timezone options). Beat must use `LabelScheduleSource`; the configured Redis
+application already includes it. The default is `None`, which adds no recurring
+schedule: `enqueue`, `at`, `cron` and `every` still work for dynamic jobs.
+Explicit `Registrar.include(..., labels={"schedule": [...]})` overrides the class
+default; an empty list disables it. Other labels retain the class default.
+Schedule metadata is copied per registration, including nested arguments.
+
 ## Modules and runnable paths
 
 Keep each module's schedulers and providers together, for example:
