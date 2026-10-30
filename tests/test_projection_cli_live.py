@@ -13,16 +13,19 @@ from uuid import uuid4
 import pytest
 
 
-@pytest.mark.parametrize("kind", ["redis", "rabbit"])
+@pytest.mark.parametrize("kind", ["redis", "rabbit", "nats", "kafka"])
 @pytest.mark.parametrize("retry", [False, True])
 def test_projection_processes(tmp_path, kind, retry):
-    if not os.getenv("TEST_REDIS_URL") or (
-        kind == "rabbit" and not os.getenv("TEST_RABBIT_URL")
-    ):
+    url_key = f"TEST_{kind.upper()}_URL"
+    if not os.getenv("TEST_REDIS_URL") or not os.getenv(url_key):
         pytest.skip("Requires isolated Redis and selected broker service")
     pytest.importorskip("taskiq_redis")
     if kind == "rabbit":
         pytest.importorskip("taskiq_aio_pika")
+    elif kind in ("nats", "kafka"):
+        pytest.importorskip(
+            "taskiq_nats" if kind == "nats" else "taskiq_aio_kafka"
+        )
     package = tmp_path / "projection_app"
     package.mkdir()
     (package / "__init__.py").touch()
@@ -38,6 +41,15 @@ def test_projection_processes(tmp_path, kind, retry):
         from papilio_tasks.tools.hooks import Hook, Handler
         from papilio_tasks.tools.hooks.publish import PublishHooks, Published
         from papilio_tasks.tools.hooks.projection import Hooks, Data
+
+        if os.environ['PROJECTION_KIND'] == 'nats':
+            from papilio_tasks.apps.projections.backends.nats import (
+                NatsDirect as Direct,
+            )
+        elif os.environ['PROJECTION_KIND'] == 'kafka':
+            from papilio_tasks.apps.projections.backends.kafka import (
+                KafkaDirect as Direct,
+            )
 
         def record(phase, **data):
             with Path(os.environ['PROJECTION_EVENTS']).open('a') as file:
@@ -134,6 +146,33 @@ def test_projection_processes(tmp_path, kind, retry):
                 exchange=Exchange(name=name),
                 dead_letter_queue=Queue(name=name+'-dead'),
             )
+        elif os.environ['PROJECTION_KIND'] == 'nats':
+            from taskiq_nats import PullBasedJetStreamBroker
+            from papilio_tasks.apps.projections.backends.nats import (
+                JetStreamBroker,
+            )
+            from papilio_tasks.apps.projections.registry.nats import (
+                NatsRegistrar as Registrar,
+            )
+            transport = JetStreamBroker(PullBasedJetStreamBroker(
+                os.environ['TEST_NATS_URL'], subject=name,
+                stream_name=name, durable=name, pull_consume_timeout=1,
+            ))
+        elif os.environ['PROJECTION_KIND'] == 'kafka':
+            from taskiq_aio_kafka import AioKafkaBroker
+            from papilio_tasks.apps.projections.backends.kafka import (
+                KafkaBroker,
+            )
+            from papilio_tasks.apps.projections.registry.kafka import (
+                KafkaRegistrar as Registrar,
+            )
+            native = AioKafkaBroker(
+                os.environ['TEST_KAFKA_URL'], kafka_topic=name,
+            )
+            native.configure_consumer(
+                group_id=name, auto_offset_reset='earliest',
+            )
+            transport = KafkaBroker(native)
         else:
             from papilio_tasks.infra.taskiq.brokers.backends.redis import (
                 RedisStreamBroker,
@@ -308,6 +347,38 @@ def test_projection_processes(tmp_path, kind, retry):
                                 await channel.exchange_delete(name)
                     asyncio.run(main())
                 """),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            assert cleanup.returncode == 0, cleanup.stderr
+        elif kind in ("nats", "kafka"):
+            cleanup = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    """
+import asyncio, os
+name = os.environ['PROJECTION_QUEUE']
+if os.environ['PROJECTION_KIND'] == 'nats':
+    import nats
+    async def cleanup():
+        client = await nats.connect(os.environ['TEST_NATS_URL'])
+        try:
+            await client.jetstream().delete_stream(name)
+        finally:
+            await client.close()
+    asyncio.run(cleanup())
+else:
+    from kafka.admin import KafkaAdminClient
+    admin = KafkaAdminClient(bootstrap_servers=os.environ['TEST_KAFKA_URL'])
+    try:
+        admin.delete_topics([name])
+    finally:
+        admin.close()
+""",
                 ],
                 env=env,
                 capture_output=True,

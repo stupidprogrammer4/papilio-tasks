@@ -89,7 +89,8 @@ import sys
 class BlockOptional(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split('.')[0] in {
-            'taskiq_aio_pika', 'taskiq_redis', 'dishka', 'papilio'
+            'taskiq_aio_pika', 'taskiq_redis', 'taskiq_nats',
+            'taskiq_aio_kafka', 'kafka', 'nats', 'dishka', 'papilio'
         }:
             raise ImportError(fullname)
 

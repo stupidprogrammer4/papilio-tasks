@@ -17,8 +17,17 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.parametrize("source_kind", ["memory", "redis", "retry"])
-def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
+@pytest.mark.parametrize("kind", ["redis", "nats", "kafka"])
+def test_worker_and_beat_paths_execute_and_close_scopes(
+    tmp_path, source_kind, kind
+):
     pytest.importorskip("taskiq_redis")
+    if not os.getenv(f"TEST_{kind.upper()}_URL"):
+        pytest.skip("Requires isolated " + kind)
+    if kind in ("nats", "kafka"):
+        pytest.importorskip(
+            "taskiq_nats" if kind == "nats" else "taskiq_aio_kafka"
+        )
     package = tmp_path / "cli_app"
     feature = package / "modules" / "reports"
     feature.mkdir(parents=True)
@@ -31,6 +40,15 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         from pathlib import Path
         from papilio_tasks.tools.retry import Retry
         from papilio_tasks.apps.schedulers.backends.redis import RedisScheduler
+
+        if os.environ['CLI_KIND'] == 'nats':
+            from papilio_tasks.apps.schedulers.backends.nats import (
+                NatsScheduler as RedisScheduler,
+            )
+        elif os.environ['CLI_KIND'] == 'kafka':
+            from papilio_tasks.apps.schedulers.backends.kafka import (
+                KafkaScheduler as RedisScheduler,
+            )
 
         def record(value):
             with Path(os.environ['CLI_EVENTS']).open('a') as stream:
@@ -91,10 +109,41 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         from .modules.reports.providers import Jobs
         from .modules.reports.schedulers import Report, record
 
-        registrar = RedisRegistrar(RedisStreamBroker(
-            os.environ['TEST_REDIS_URL'], queue_name=os.environ['CLI_QUEUE'],
-            consumer_group_name=os.environ['CLI_QUEUE'], consumer_id='0',
-        ))
+        name = os.environ['CLI_QUEUE']
+        if os.environ['CLI_KIND'] == 'nats':
+            from taskiq_nats import PullBasedJetStreamBroker
+            from papilio_tasks.apps.schedulers.backends.nats import (
+                JetStreamBroker,
+            )
+            from papilio_tasks.apps.schedulers.registry.nats import (
+                NatsRegistrar,
+            )
+            registrar = NatsRegistrar(JetStreamBroker(
+                PullBasedJetStreamBroker(
+                    os.environ['TEST_NATS_URL'], subject=name,
+                    stream_name=name, durable=name, pull_consume_timeout=1,
+                ),
+            ))
+        elif os.environ['CLI_KIND'] == 'kafka':
+            from taskiq_aio_kafka import AioKafkaBroker
+            from papilio_tasks.apps.schedulers.backends.kafka import (
+                KafkaBroker,
+            )
+            from papilio_tasks.apps.schedulers.registry.kafka import (
+                KafkaRegistrar,
+            )
+            native = AioKafkaBroker(
+                os.environ['TEST_KAFKA_URL'], kafka_topic=name,
+            )
+            native.configure_consumer(
+                group_id=name, auto_offset_reset='earliest',
+            )
+            registrar = KafkaRegistrar(KafkaBroker(native))
+        else:
+            registrar = RedisRegistrar(RedisStreamBroker(
+                os.environ['TEST_REDIS_URL'], queue_name=name,
+                consumer_group_name=name, consumer_id='0',
+            ))
         retry_source = None
         if os.environ['CLI_SOURCE'] == 'retry':
             from papilio_tasks.infra.taskiq.sources.backends.redis import (
@@ -147,6 +196,7 @@ def test_worker_and_beat_paths_execute_and_close_scopes(tmp_path, source_kind):
         "CLI_QUEUE": "papilio-cli-" + uuid4().hex,
         "CLI_PREFIX": "papilio-source-" + uuid4().hex,
         "CLI_SOURCE": source_kind,
+        "CLI_KIND": kind,
     }
     # Also used to run the same test against the isolated installed wheel.
     executable = os.getenv("TEST_PAPILIO_CLI")
@@ -257,6 +307,38 @@ asyncio.run(publish())
             keys = list(redis.scan_iter(match=env["CLI_PREFIX"] + "*"))
             if keys:
                 redis.delete(*keys)
+        if kind in ("nats", "kafka"):
+            cleanup = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    """
+import asyncio, os
+name = os.environ['CLI_QUEUE']
+if os.environ['CLI_KIND'] == 'nats':
+    import nats
+    async def cleanup():
+        client = await nats.connect(os.environ['TEST_NATS_URL'])
+        try:
+            await client.jetstream().delete_stream(name)
+        finally:
+            await client.close()
+    asyncio.run(cleanup())
+else:
+    from kafka.admin import KafkaAdminClient
+    admin = KafkaAdminClient(bootstrap_servers=os.environ['TEST_KAFKA_URL'])
+    try:
+        admin.delete_topics([name])
+    finally:
+        admin.close()
+""",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            assert cleanup.returncode == 0, cleanup.stderr
     entries = events.read_text().splitlines()
     assert entries.count("executed:17") == 1, output()
     assert entries.count("request_closed") == (

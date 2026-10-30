@@ -41,9 +41,13 @@ that future Python releases have already been tested.
 pip install 'papilio-tasks[scheduler]'         # in-process Memory default
 pip install 'papilio-tasks[scheduler-rabbit]'  # RabbitMQ
 pip install 'papilio-tasks[scheduler-redis]'   # Redis Streams
+pip install 'papilio-tasks[scheduler-nats]'    # NATS pull JetStream
+pip install 'papilio-tasks[scheduler-kafka]'   # native Taskiq Kafka
 pip install 'papilio-tasks[projection]'        # in-process Memory default
 pip install 'papilio-tasks[projection-rabbit]' # RabbitMQ
 pip install 'papilio-tasks[projection-redis]'  # Redis Streams / retry source
+pip install 'papilio-tasks[projection-nats]'   # NATS pull JetStream
+pip install 'papilio-tasks[projection-kafka]'  # native Taskiq Kafka
 pip install 'papilio-tasks[events-rabbit]'     # FastStream RabbitMQ events
 pip install 'papilio-tasks[events-kafka]'      # FastStream Kafka events
 pip install 'papilio-tasks[events-redis]'      # FastStream Redis Streams / PubSub / List events
@@ -770,6 +774,144 @@ queue when their send destination differs from that main stream.
 Configuration must finish before startup. Rabbit enforces that timing; Redis
 currently relies on the caller. Network task results require a native result
 backend if callers need to retrieve them.
+
+### NATS JetStream tasks
+
+Install `scheduler-nats` or `projection-nats`. These extras use
+`taskiq-nats>=0.6,<0.7` with the existing Taskiq 0.12 runtime; taskiq-nats 0.7
+requires Taskiq 0.13 and is outside this release's compatibility range.
+
+Configure the native `PullBasedJetStreamBroker`, then pass it to the shared
+infrastructure `JetStreamBroker`. The adapter retains that exact native instance.
+All tasks on one broker use its subject, stream and durable consumer. Use the
+same durable on competing workers; separate durables independently receive the
+stream. This integration deliberately accepts pull JetStream, rather than Core
+NATS broadcast or a push subscription on an idle producer.
+
+```python
+from dishka import Provider, Scope
+from taskiq_nats import PullBasedJetStreamBroker
+from taskiq.schedule_sources import LabelScheduleSource
+
+from papilio_tasks.apps.schedulers.application import create_broker, create_beat
+from papilio_tasks.apps.schedulers.backends.nats import JetStreamBroker, NatsScheduler
+from papilio_tasks.apps.schedulers.registry.nats import NatsRegistrar
+from papilio_tasks.infra.taskiq.sources.base import Source
+
+class Report(NatsScheduler):
+    schedule = [{"cron": "0 3 * * *", "kwargs": {"account_id": 7}}]
+
+    async def run(self, account_id: int) -> None:
+        # Use application-owned services supplied through normal Dishka providers.
+        pass
+
+transport = JetStreamBroker(PullBasedJetStreamBroker(
+    "nats://localhost:4222",
+    subject="jobs.reports",
+    stream_name="REPORT_JOBS",
+    durable="report-workers",
+    pull_consume_timeout=1,
+))
+registry = NatsRegistrar(transport)
+registry.include(Report)
+provider = Provider(scope=Scope.REQUEST)
+provider.provide(Report)
+broker = create_broker(registrar=registry, providers=[provider])
+
+# Native recurring class defaults are discovered by LabelScheduleSource.
+beat = create_beat(broker, sources=[Source(LabelScheduleSource(broker))])
+```
+
+Run with the existing `papilio_tasks scheduler worker module:broker` and
+`papilio_tasks scheduler beat module:beat` commands. For projections, import
+`NatsProjection[T, D, R]`, `NatsDirect[T, R]` and `JetStreamBroker` from
+`apps.projections.backends.nats`, and `NatsRegistrar` from
+`apps.projections.registry.nats`. The existing projection `create_broker`,
+`create_beat`, enqueue/project decorators, hooks and Dishka scopes remain shared.
+There is no per-task `queue` or `topic` API for this native fixed-subject broker.
+Use separately configured runtimes when independent subject subscriptions are
+needed. Do not mix Event JSON bodies and Taskiq job payloads on the same subject.
+
+Connection, stream/consumer options, acknowledgement wait, delivery policy and
+result backends remain native configuration. Explicit acknowledgements happen
+through Taskiq's `AckableMessage` path; redelivery can repeat a completed effect.
+The native broker creates its stream and pull consumer during startup, including
+producer startup. Give publishers and workers compatible stream/consumer settings.
+Construction and registration open no NATS connections.
+
+### Kafka tasks
+
+Install `scheduler-kafka` or `projection-kafka`. Configure the native
+`taskiq_aio_kafka.AioKafkaBroker` and wrap it with
+`infra.taskiq.brokers.backends.kafka.KafkaBroker`. This is distinct from the
+FastStream Kafka adapter used by Events. These extras constrain `kafka-python`
+to `>=2.0.2,<2.3`: the native broker's default partition assignor uses the older
+protocol expected by aiokafka. kafka-python 2.3/3 changed that protocol and are
+not supported with this native default; unconstrained installation can fail
+when a worker joins its consumer group.
+
+```python
+from taskiq_aio_kafka import AioKafkaBroker
+from kafka.admin import NewTopic
+
+from papilio_tasks.apps.schedulers.backends.kafka import KafkaBroker, KafkaScheduler
+from papilio_tasks.apps.schedulers.registry.kafka import KafkaRegistrar
+
+class Report(KafkaScheduler):
+    topic = "reports"
+
+    async def run(self, account_id: int) -> None:
+        pass
+
+native = AioKafkaBroker(
+    "localhost:9092", kafka_topic="jobs",
+    kafka_topics=[NewTopic("reports", 1, 1), NewTopic("other", 1, 1)],
+)
+native.configure_consumer(group_id="report-workers", auto_offset_reset="earliest")
+transport = KafkaBroker(native)
+registry = KafkaRegistrar(transport)
+registry.include(Report)
+# Pass registry and ordinary Report providers to scheduler create_broker.
+```
+
+For projections, import `KafkaProjection[T, D, R]`, `KafkaDirect[T, R]` and
+`KafkaBroker` from `apps.projections.backends.kafka`, and `KafkaRegistrar` from
+`apps.projections.registry.kafka`. Scheduler and projection registrars use
+`include(..., topic="other")` → inherited class `topic` → native broker default.
+An override does not mutate the class; conflicting native routing labels fail
+before binding it. Selecting a send topic does not configure its declaration
+or worker subscription: put destinations in native `kafka_topic`/`kafka_topics`.
+Configure the consumer group explicitly. Workers sharing a group divide
+partitions; distinct groups process their own copies.
+
+The native Kafka integration has different operational guarantees from JetStream:
+
+- `AioKafkaBroker` constructs a synchronous `KafkaAdminClient` and performs
+  synchronous admin calls during native startup. Configure/construct it outside
+  request handling; wrapping and class registration add no further network I/O.
+- Native Kafka `listen()` yields bytes, not `AckableMessage`. Offsets follow
+  native consumer configuration, including auto-commit; they are not committed
+  by Papilio after a successful projection write. Disabling auto-commit does not
+  add a Papilio manual commit path. Recovery can lose or replay application work.
+- Native producer/consumer/admin lifecycle, security options, topic management
+  and result backends are retained. This adapter adds no polling loop, offset
+  tracking, transaction or custom recovery engine.
+
+Choose a transport matching the required processing guarantee. All applications
+still own idempotency, business transactions and reconciliation. Retained Kafka
+records can be replayed using native group/offset management; the same handler
+must tolerate repeated side effects.
+
+### Scheduling and retries with either transport
+
+Broker selection does not select schedule storage. Existing `at`, `cron`, `every`,
+class defaults, native beat and `Retry` policies use the same source contracts.
+Use `MemorySource` only when that source and its consumers share one process;
+separate worker/beat processes need an explicitly configured shared source such
+as `RedisSource` (install the corresponding `scheduler-redis` or
+`projection-redis` extra too). Include the configured retry source in beat's
+sources and run beat for retry dispatch. Task results likewise require an
+explicit native result backend when they must cross processes.
 
 ## Signatures and boundaries
 

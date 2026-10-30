@@ -22,7 +22,8 @@ import importlib.abc
 import sys
 
 kind = sys.argv[1]
-blocked = {'papilio', 'dishka', 'faststream',
+blocked = {'papilio', 'dishka', 'faststream', 'taskiq_nats',
+           'taskiq_aio_kafka', 'kafka', 'nats',
            'papilio_tasks.apps.schedulers', 'papilio_tasks.apps.projections',
            'papilio_tasks.apps.events'}
 if kind != 'rabbit': blocked.add('taskiq_aio_pika')

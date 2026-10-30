@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.1.0 — 2026-10-30
+
+### Added
+
+- Optional NATS pull JetStream and native Taskiq Kafka backends for schedulers
+  and projections: `scheduler-nats`, `scheduler-kafka`, `projection-nats` and
+  `projection-kafka`. Shared infra adapters retain caller-configured native
+  brokers; matching app classes and registrars preserve DI, hooks, typed single
+  and batch jobs, scheduling, publication and execution retry.
+- Kafka class/include topic selection using native routing labels, independently
+  of native declarations and worker subscriptions. NATS tasks retain the native
+  broker's fixed subject, stream and durable pull consumer.
+- Configured Redis app factories, producer lifecycle composition, Redis schedule
+  inventory and optional module-owned scheduler defaults, previously published
+  on main after 1.0.0.
+
+### Compatibility and limits
+
+- Existing APIs and Memory/Rabbit/Redis defaults are retained. Taskiq remains
+  0.12; NATS tasks use taskiq-nats 0.6, independently of FastStream NATS Events.
+  Base installation still has no runtime dependencies; Taskiq extras do not
+  install FastStream or unrelated transports.
+- Kafka task extras constrain kafka-python to `>=2.0.2,<2.3`, retaining the
+  native task broker's partition-assignment protocol compatibility with aiokafka.
+- Schedule storage and result storage remain explicitly selected. Neither Kafka
+  nor JetStream makes a database write and publication atomic or makes effects
+  exactly once. Native Kafka auto-commit is not acknowledgement after a successful
+  job; native Kafka synchronous admin construction/startup remains visible.
+- JetStream uses native pull acknowledgement/redelivery. Stream retention,
+  durable consumers, repeated effects and external recovery remain caller-owned.
+
 ## 1.0.0 — 2026-09-17
 
 First stable release of Papilio's modular background-job package. Install only

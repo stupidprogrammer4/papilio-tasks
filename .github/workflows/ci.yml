@@ -81,7 +81,7 @@ jobs:
       - name: Install test and build dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install '.[dev,scheduler-rabbit,scheduler-redis,projection-rabbit,projection-redis,events-rabbit,events-kafka,events-redis,events-nats]' hatchling
+          python -m pip install '.[dev,scheduler-rabbit,scheduler-redis,scheduler-nats,scheduler-kafka,projection-rabbit,projection-redis,projection-nats,projection-kafka,events-rabbit,events-kafka,events-redis,events-nats]' hatchling
           python -m pip check
       - name: Check style and types
         run: |

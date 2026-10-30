@@ -9,6 +9,7 @@ import sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         blocked = ('taskiq', 'dishka', 'faststream', 'redis', 'aio_pika',
+                   'taskiq_nats', 'taskiq_aio_kafka', 'kafka', 'nats',
                    'papilio_tasks.infra', 'papilio_tasks.apps.schedulers',
                    'papilio_tasks.apps.projections',
                    'papilio_tasks.apps.events')
